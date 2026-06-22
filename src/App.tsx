@@ -13,6 +13,7 @@ import { NostrLoginProvider } from '@nostrify/react/login';
 import { AppProvider } from '@/components/AppProvider';
 import { AppConfig } from '@/contexts/AppContext';
 import { APP_RELAYS } from '@/lib/appRelays';
+import { TenderHubProvider } from '@/contexts/TenderHubContext';
 import AppRouter from './AppRouter';
 
 const head = createHead({
@@ -56,7 +57,9 @@ export function App() {
               <TooltipProvider>
                 <Toaster />
                 <Suspense>
-                  <AppRouter />
+                  <TenderHubProvider>
+                    <AppRouter />
+                  </TenderHubProvider>
                 </Suspense>
               </TooltipProvider>
             </NostrProvider>
