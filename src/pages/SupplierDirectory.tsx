@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 import { TENDER_CATEGORIES, ALL_LOCATIONS } from "@/lib/kenyaData";
-import { shortAddr } from "@/lib/cardano";
+import { generateDID } from "@/lib/cardano";
 import type { Registration } from "@/lib/types";
 
 export default function SupplierDirectory() {
@@ -216,7 +216,7 @@ function SupplierCard({
             <span>{supplier.city}, {supplier.country}</span>
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
-            <span className="text-xs font-mono">{shortAddr(supplier.walletAddress)}</span>
+            <span className="text-xs font-mono">{generateDID(supplier.walletAddress)}</span>
           </div>
         </div>
 

@@ -33,7 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/useToast";
-import { signMessageWithTimeout } from "@/lib/cardano";
+import { signMessageWithTimeout, generateDID } from "@/lib/cardano";
 import { formatPublicationType, formatAgpo } from "@/lib/kenyaData";
 import type { Milestone } from "@/lib/types";
 
@@ -320,7 +320,7 @@ export default function TenderDetail() {
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <div className="font-medium">{bid.supplierName}</div>
-                          <div className="text-xs text-muted-foreground font-mono mt-0.5">{bid.supplierAddress.slice(0, 20)}…</div>
+                          <div className="text-xs text-muted-foreground font-mono mt-0.5">{generateDID(bid.supplierAddress)}</div>
                         </div>
                         <StatusBadge status={bid.status} />
                       </div>
@@ -389,7 +389,7 @@ export default function TenderDetail() {
               <CardContent>
                 <div className="flex items-center gap-3">
                   <div className="flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary"><User className="size-5" /></div>
-                  <div><div className="font-medium">{tender.buyerName}</div><div className="text-xs text-muted-foreground font-mono">{tender.buyerAddress.slice(0, 20)}…</div></div>
+                  <div><div className="font-medium">{tender.buyerName}</div><div className="text-xs text-muted-foreground font-mono">{generateDID(tender.buyerAddress)}</div></div>
                 </div>
               </CardContent>
             </Card>

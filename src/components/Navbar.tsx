@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronDown, ExternalLink, Loader2, Wallet, X } from "lucide-react";
 
 import { useTenderHub } from "@/contexts/TenderHubContext";
-import { formatAda, shortAddr, IS_TESTNET, NETWORK_LABEL, TESTNET_FAUCET_URL } from "@/lib/cardano";
+import { formatAda, generateDID, IS_TESTNET, NETWORK_LABEL, TESTNET_FAUCET_URL } from "@/lib/cardano";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,15 +27,15 @@ export function WalletButton() {
         <DropdownMenuTrigger asChild>
           <Button variant="outline" className={cn("gap-2 max-w-[220px] sm:max-w-none", wrongNetwork && "border-destructive")}>
             <span className={cn("size-2 rounded-full animate-pulse", wrongNetwork ? "bg-destructive" : "bg-emerald-500")} />
-            <span className="truncate">{shortAddr(session.address)}</span>
+            <span className="truncate font-mono text-xs">{generateDID(session.address)}</span>
             <ChevronDown className="size-4 shrink-0 opacity-50" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel className="flex flex-col gap-1">
             <span>{session.walletName}</span>
-            <span className="text-xs font-normal text-muted-foreground truncate">
-              {session.address}
+            <span className="text-xs font-normal text-muted-foreground truncate font-mono">
+              {generateDID(session.address)}
             </span>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />

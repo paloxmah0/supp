@@ -36,7 +36,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/useToast";
-import { signMessageWithTimeout, signEvidence } from "@/lib/cardano";
+import { signMessageWithTimeout, signEvidence, generateDID } from "@/lib/cardano";
 import { cn } from "@/lib/utils";
 import type { ContractType, DisputeScope, Milestone, MilestoneStatus } from "@/lib/types";
 
@@ -919,7 +919,7 @@ function PartyRow({ label, name, address }: { label: string; name: string; addre
       <div className="flex-1 min-w-0">
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className="font-medium text-sm truncate">{name}</div>
-        <div className="text-xs text-muted-foreground font-mono truncate">{address.slice(0, 20)}…</div>
+        <div className="text-xs text-muted-foreground font-mono truncate">{generateDID(address)}</div>
       </div>
     </div>
   );

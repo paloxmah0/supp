@@ -164,6 +164,52 @@ export function shortAddr(addr: string): string {
 }
 
 /**
+ * Generate a human-readable DID from a Cardano wallet address.
+ *
+ * Cardano addresses are long bech32 strings like
+ * `addr_test1qpzry9x8gf2tvdw0s3jn54khce6mua7l...` which are unreadable.
+ * This function derives a short, memorable DID in the format:
+ *
+ *   did:tenderhub:<8-char-fingerprint>
+ *
+ * The fingerprint is deterministically derived from the address so the
+ * same wallet always gets the same DID.  It uses a simple FNV-1a hash to
+ * produce 8 alphanumeric characters — no crypto needed, just a display
+ * identifier.
+ *
+ * Example:
+ *   addr_test1qpzry9x8gf2tvdw0s3jn54khce6mua7l...
+ *   → did:tenderhub:7a3f9b2e
+ */
+export function generateDID(address: string): string {
+  // If the address is already short (e.g. hex fallback), use it directly
+  if (address.length <= 12) {
+    return `did:tenderhub:${address.toLowerCase()}`;
+  }
+
+  // FNV-1a hash for a deterministic short fingerprint
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < address.length; i++) {
+    hash ^= address.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // Convert to unsigned 32-bit, then to base36, pad to 8 chars
+  const fp = (hash >>> 0).toString(36).padStart(8, "0").slice(-8);
+
+  return `did:tenderhub:${fp}`;
+}
+
+/**
+ * Generate a human-readable display name from a wallet address + wallet name.
+ * Returns something like "Eternl · 7a3f9b2e" or just the DID if no wallet name.
+ */
+export function walletDisplayName(address: string, walletName?: string): string {
+  const did = generateDID(address);
+  const short = did.split(":")[2];
+  return walletName ? `${walletName} · ${short}` : did;
+}
+
+/**
  * Enable a wallet and return a session object.
  * Throws a descriptive error if the wallet is not found or the user rejects.
  */

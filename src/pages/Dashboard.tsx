@@ -18,7 +18,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { shortAddr } from "@/lib/cardano";
+import { generateDID } from "@/lib/cardano";
 
 export default function Dashboard() {
   const { wallet, registrations, tenders, bids, contracts } = useTenderHub();
@@ -86,7 +86,7 @@ export default function Dashboard() {
             <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
               <Badge variant="secondary" className="capitalize">{registration.role}</Badge>
               <span>·</span>
-              <span className="font-mono">{shortAddr(session.address)}</span>
+              <span className="font-mono text-xs">{generateDID(session.address)}</span>
               <span>·</span>
               <span>{session.walletName}</span>
             </div>
