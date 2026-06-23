@@ -6,6 +6,9 @@ import { defineConfig } from "vitest/config";
 
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
+  // Use relative paths so the build works on GitHub Pages (/supp/),
+  // nsite, Netlify, and other hosts without changing the base path.
+  base: "./",
   server: {
     host: "::",
     port: 8080,

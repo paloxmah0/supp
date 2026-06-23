@@ -14,9 +14,24 @@ import ContractPage from "./pages/Contract";
 import { NIP19Page } from "./pages/NIP19Page";
 import NotFound from "./pages/NotFound";
 
+/**
+ * Detect the router basename. On GitHub Pages the app is served from a
+ * subdirectory (e.g. /supp/), so we need to tell BrowserRouter. On nsite,
+ * Netlify, and other root-hosted deployments the basename is "/".
+ */
+function getBasename(): string {
+  if (typeof window === "undefined") return "/";
+  const { hostname, pathname } = window.location;
+  if (hostname.endsWith("github.io")) {
+    const segments = pathname.split("/").filter(Boolean);
+    return segments.length > 0 ? `/${segments[0]}` : "/";
+  }
+  return "/";
+}
+
 export function AppRouter() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={getBasename()}>
       <ScrollToTop />
       <Routes>
         <Route path="/" element={<Index />} />
