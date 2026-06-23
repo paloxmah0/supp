@@ -4,6 +4,7 @@ import { AlertTriangle, ChevronDown, ExternalLink, Loader2, Wallet, X } from "lu
 
 import { useTenderHub } from "@/contexts/TenderHubContext";
 import { formatAda, generateDID, IS_TESTNET, NETWORK_LABEL, TESTNET_FAUCET_URL } from "@/lib/cardano";
+import { LoginArea } from "@/components/auth/LoginArea";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -217,6 +218,7 @@ export function Navbar() {
               <Link to="/register">Complete Registration</Link>
             </Button>
           )}
+          <LoginArea className="max-w-40" />
           <WalletButton />
         </div>
       </div>
