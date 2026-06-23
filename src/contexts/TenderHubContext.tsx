@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 
 import { useCardanoWallet, type UseCardanoWalletReturn } from "@/hooks/useCardanoWallet";
+import { useTenderHubSync } from "@/hooks/useTenderHubSync";
 import {
   useRegistrationStore,
   useTenderStore,
@@ -24,10 +25,15 @@ const TenderHubContext = createContext<TenderHubContextValue | undefined>(undefi
 
 export function TenderHubProvider({ children }: { children: ReactNode }) {
   const wallet = useCardanoWallet();
-  const registrations = useRegistrationStore();
-  const tenders = useTenderStore();
-  const bids = useBidStore();
-  const contracts = useContractStore();
+
+  // Cross-device sync via Nostr NIP-78. Returns a debounced publish
+  // function that each store calls when local data changes.
+  const { requestPublish } = useTenderHubSync();
+
+  const registrations = useRegistrationStore(requestPublish);
+  const tenders = useTenderStore(requestPublish);
+  const bids = useBidStore(requestPublish);
+  const contracts = useContractStore(requestPublish);
 
   const value = useMemo<TenderHubContextValue>(
     () => ({ wallet, registrations, tenders, bids, contracts }),

@@ -108,12 +108,16 @@ For the MVP, data is stored in localStorage. Cross-device synchronization uses:
 1. **BroadcastChannel API** — for real-time sync across browser tabs on the same device
 2. **Storage events** — for cross-tab sync when data changes
 3. **Nostr NIP-78 (appData)** — for cross-device sync via Nostr relays
-   - All platform state (registrations, tenders, bids, contracts) is published as a NIP-78 replaceable event (kind 30078) with d-tag "tenderhub-state"
+   - All platform state (registrations, tenders, bids, contracts) is published as a NIP-78 addressable event (kind 30078) with d-tag `tenderhub-state`
+   - The event is signed with the user's Nostr identity (nsec, NIP-07 extension, or NIP-46 bunker) via Nostrify's signer — not raw `window.nostr`
+   - The event is published to all configured write relays via `nostr.event()`
+   - On mount, each device queries for the latest kind 30078 event and opens a live subscription (`nostr.req()`) for real-time updates
+   - A 15-second polling fallback (`nostr.query()`) catches updates if the live subscription fails
+   - Incoming remote state is **merged** per-entity (by `id`, last-write-wins by `updatedAt`) — not blindly overwritten — so concurrent creates on different devices both survive
    - Changes are debounced (2-second delay) to avoid flooding relays
-   - On mount, each device polls localStorage every 5 seconds to pick up changes synced from Nostr by other tabs
-   - Requires a NIP-07 Nostr extension (e.g., nos2x, Alby) for signing — if no extension is present, the app works in local-only mode
+   - Works with any Nostr login method (nsec, extension, NIP-46 bunker) — no separate NIP-07 extension required
 
-This fixes the issue where adding a buyer on a laptop didn't update stats on a phone — data now syncs through Nostr relays.
+This fixes the issue where adding a tender on a laptop didn't update on a phone — data now syncs through Nostr relays.
 
 ### Production Roadmap
 - **Cardano indexer** (Blockfrost/Carp) for on-chain escrow state

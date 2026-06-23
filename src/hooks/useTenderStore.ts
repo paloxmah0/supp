@@ -13,17 +13,25 @@ import type {
   Tender,
 } from "@/lib/types";
 
+import { TENDERHUB_REMOTE_SYNC_EVENT } from "./useTenderHubSync";
+
 /**
  * A localStorage-backed store for the Cardano Tender Hub.
  *
  * In production this would be an Aiken smart-contract + Cardano indexer,
  * but the interface stays the same.
  *
- * Cross-device sync: All data is also synced via Nostr (NIP-78 appData
- * replaceable events kind 30078) so that changes on one device (e.g. adding
- * a buyer on a laptop) are reflected on another device (e.g. a phone).
- * The sync layer listens for storage events (same-origin cross-tab) and
- * also polls for Nostr updates on mount.
+ * Cross-device sync is handled by `useTenderHubSync` (see that file for
+ * details). Each store hook here:
+ *  - Saves to localStorage on every change
+ *  - Broadcasts to other tabs via BroadcastChannel (same-browser sync)
+ *  - Calls the `onSyncChange` callback (provided by the sync hook) to
+ *    trigger a debounced Nostr publish for cross-device sync
+ *  - Listens for `tenderhub:remote-sync` custom events (dispatched by the
+ *    sync hook when remote data has been merged into localStorage) and
+ *    re-reads from localStorage to update React state
+ *  - Listens for `storage` events and BroadcastChannel messages for
+ *    same-browser cross-tab sync
  */
 
 const REGISTRATIONS_KEY = "cardano-tender-hub:registrations";
@@ -53,110 +61,6 @@ function auditEntry(actor: string, actorName: string, action: string, details: s
   return { id: uid(), timestamp: Date.now(), actor, actorName, action, details, txHash };
 }
 
-// ─── Cross-device sync via Nostr (NIP-78) ──────────────────────────────
-
-/**
- * Sync all stores to a Nostr NIP-78 replaceable event (kind 30078) with
- * a d-tag of "tenderhub-state". This ensures that any change made on one
- * device propagates to all other devices that share the same Nostr identity.
- *
- * We use a debounced approach so rapid changes don't flood relays.
- */
-
-let syncTimeout: ReturnType<typeof setTimeout> | null = null;
-
-function scheduleNostrSync(): void {
-  if (syncTimeout) clearTimeout(syncTimeout);
-  syncTimeout = setTimeout(() => {
-    publishTenderHubState().catch(() => {
-      // Silently fail — Nostr is a best-effort sync layer
-    });
-  }, 2000);
-}
-
-/**
- * Publish the full TenderHub state to Nostr as a NIP-78 replaceable event.
- * This includes all registrations, tenders, bids, and contracts.
- */
-async function publishTenderHubState(): Promise<void> {
-  try {
-    // Try to get the Nostr signer from window.nostr (NIP-07 extension)
-    const nostr = (window as unknown as { nostr?: { getPublicKey: () => Promise<string>; signEvent: <T>(e: T) => Promise<T> } }).nostr;
-    if (!nostr) return; // No Nostr extension — local-only mode
-
-    const pubkey = await nostr.getPublicKey();
-
-    const state = {
-      registrations: load<Registration>(REGISTRATIONS_KEY),
-      tenders: load<Tender>(TENDERS_KEY),
-      bids: load<Bid>(BIDS_KEY),
-      contracts: load<EscrowContract>(CONTRACTS_KEY),
-      syncedAt: Date.now(),
-    };
-
-    const event = {
-      kind: 30078,
-      pubkey,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [["d", "tenderhub-state"], ["client", "tenderhub"]],
-      content: JSON.stringify(state),
-    };
-
-    await nostr.signEvent(event);
-    // The signEvent in NIP-07 typically also publishes to relays
-  } catch {
-    // Silently fail — Nostr sync is best-effort
-  }
-}
-
-/**
- * Listen for Nostr state updates from other devices.
- * This uses the BroadcastChannel API for same-origin cross-tab sync,
- * plus a storage event listener for cross-tab sync.
- */
-function setupStorageSync(
-  key: string,
-  setter: (data: unknown[]) => void,
-): () => void {
-  const handleStorage = (e: StorageEvent) => {
-    if (e.key !== key || !e.newValue) return;
-    try {
-      const data = JSON.parse(e.newValue) as unknown[];
-      setter(data);
-    } catch {
-      // ignore parse errors
-    }
-  };
-
-  window.addEventListener("storage", handleStorage);
-
-  // Also use BroadcastChannel for more reliable cross-tab sync
-  let channel: BroadcastChannel | null = null;
-  try {
-    channel = new BroadcastChannel(`tenderhub:${key}`);
-    channel.onmessage = (e: MessageEvent) => {
-      if (e.data?.type === "sync" && Array.isArray(e.data.data)) {
-        setter(e.data.data);
-      }
-    };
-  } catch {
-    // BroadcastChannel not available
-  }
-
-  // Periodically re-read from localStorage to catch Nostr-synced changes
-  // that were written by other tabs/devices
-  const interval = setInterval(() => {
-    const data = load(key);
-    setter(data);
-  }, 5000);
-
-  return () => {
-    window.removeEventListener("storage", handleStorage);
-    channel?.close();
-    clearInterval(interval);
-  };
-}
-
 function broadcastChange(key: string, data: unknown[]): void {
   try {
     const channel = new BroadcastChannel(`tenderhub:${key}`);
@@ -165,6 +69,54 @@ function broadcastChange(key: string, data: unknown[]): void {
   } catch {
     // ignore
   }
+}
+
+/**
+ * Set up listeners for cross-tab and cross-device updates.
+ *
+ * - `storage` events: fired by the browser when another tab writes to
+ *   localStorage (same-origin, same-browser).
+ * - `BroadcastChannel`: more reliable cross-tab messaging within the same
+ *   browser. The sync hook also uses this to notify tabs when it has merged
+ *   remote Nostr data into localStorage.
+ * - `TENDERHUB_REMOTE_SYNC_EVENT`: a custom window event dispatched by the
+ *   sync hook when remote data from another device has been merged into
+ *   localStorage. This is the key mechanism for cross-device sync within
+ *   the current tab.
+ */
+function setupStorageSync<T>(
+  key: string,
+  setter: (data: T[]) => void,
+): () => void {
+  const reread = () => setter(load<T>(key));
+
+  const handleStorage = (e: StorageEvent) => {
+    if (e.key !== key || !e.newValue) return;
+    reread();
+  };
+
+  const handleRemoteSync = () => reread();
+
+  window.addEventListener("storage", handleStorage);
+  window.addEventListener(TENDERHUB_REMOTE_SYNC_EVENT, handleRemoteSync);
+
+  let channel: BroadcastChannel | null = null;
+  try {
+    channel = new BroadcastChannel(`tenderhub:${key}`);
+    channel.onmessage = (e: MessageEvent) => {
+      if (e.data?.type === "sync" && Array.isArray(e.data.data)) {
+        setter(e.data.data as T[]);
+      }
+    };
+  } catch {
+    // BroadcastChannel not available
+  }
+
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    window.removeEventListener(TENDERHUB_REMOTE_SYNC_EVENT, handleRemoteSync);
+    channel?.close();
+  };
 }
 
 // ─── Registration ──────────────────────────────────────────────────────
@@ -179,7 +131,7 @@ export interface UseRegistrationStore {
   removePortfolioItem: (address: string, itemId: string) => void;
 }
 
-export function useRegistrationStore(): UseRegistrationStore {
+export function useRegistrationStore(onSyncChange?: () => void): UseRegistrationStore {
   const [registrations, setRegistrations] = useState<Registration[]>(() =>
     load<Registration>(REGISTRATIONS_KEY),
   );
@@ -187,14 +139,12 @@ export function useRegistrationStore(): UseRegistrationStore {
   useEffect(() => {
     save(REGISTRATIONS_KEY, registrations);
     broadcastChange(REGISTRATIONS_KEY, registrations);
-    scheduleNostrSync();
-  }, [registrations]);
+    onSyncChange?.();
+  }, [registrations, onSyncChange]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
-    return setupStorageSync(REGISTRATIONS_KEY, (data) => {
-      setRegistrations(data as Registration[]);
-    });
+    return setupStorageSync<Registration>(REGISTRATIONS_KEY, setRegistrations);
   }, []);
 
   const getRegistration = useCallback(
@@ -276,20 +226,18 @@ export interface UseTenderStore {
   deleteTender: (id: string) => void;
 }
 
-export function useTenderStore(): UseTenderStore {
+export function useTenderStore(onSyncChange?: () => void): UseTenderStore {
   const [tenders, setTenders] = useState<Tender[]>(() => load<Tender>(TENDERS_KEY));
 
   useEffect(() => {
     save(TENDERS_KEY, tenders);
     broadcastChange(TENDERS_KEY, tenders);
-    scheduleNostrSync();
-  }, [tenders]);
+    onSyncChange?.();
+  }, [tenders, onSyncChange]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
-    return setupStorageSync(TENDERS_KEY, (data) => {
-      setTenders(data as Tender[]);
-    });
+    return setupStorageSync<Tender>(TENDERS_KEY, setTenders);
   }, []);
 
   const getTender = useCallback((id: string) => tenders.find((t) => t.id === id), [tenders]);
@@ -322,20 +270,18 @@ export interface UseBidStore {
   updateBid: (id: string, updates: Partial<Bid>) => void;
 }
 
-export function useBidStore(): UseBidStore {
+export function useBidStore(onSyncChange?: () => void): UseBidStore {
   const [bids, setBids] = useState<Bid[]>(() => load<Bid>(BIDS_KEY));
 
   useEffect(() => {
     save(BIDS_KEY, bids);
     broadcastChange(BIDS_KEY, bids);
-    scheduleNostrSync();
-  }, [bids]);
+    onSyncChange?.();
+  }, [bids, onSyncChange]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
-    return setupStorageSync(BIDS_KEY, (data) => {
-      setBids(data as Bid[]);
-    });
+    return setupStorageSync<Bid>(BIDS_KEY, setBids);
   }, []);
 
   const getBidsForTender = useCallback((tenderId: string) => bids.filter((b) => b.tenderId === tenderId), [bids]);
@@ -383,20 +329,18 @@ export interface UseContractStore {
   rejectCancellation: (contractId: string, rejectorAddress: string, rejectorName: string) => void;
 }
 
-export function useContractStore(): UseContractStore {
+export function useContractStore(onSyncChange?: () => void): UseContractStore {
   const [contracts, setContracts] = useState<EscrowContract[]>(() => load<EscrowContract>(CONTRACTS_KEY));
 
   useEffect(() => {
     save(CONTRACTS_KEY, contracts);
     broadcastChange(CONTRACTS_KEY, contracts);
-    scheduleNostrSync();
-  }, [contracts]);
+    onSyncChange?.();
+  }, [contracts, onSyncChange]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
-    return setupStorageSync(CONTRACTS_KEY, (data) => {
-      setContracts(data as EscrowContract[]);
-    });
+    return setupStorageSync<EscrowContract>(CONTRACTS_KEY, setContracts);
   }, []);
 
   const getContract = useCallback((id: string) => contracts.find((c) => c.id === id), [contracts]);
