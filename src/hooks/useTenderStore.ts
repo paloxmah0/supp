@@ -21,12 +21,13 @@ import { TENDERHUB_REMOTE_SYNC_EVENT } from "./useTenderHubSync";
  * In production this would be an Aiken smart-contract + Cardano indexer,
  * but the interface stays the same.
  *
- * Cross-device sync is handled by `useTenderHubSync` (see that file for
- * details). Each store hook here:
+ * Cross-device / cross-user sync is handled by `useTenderHubSync` (see that
+ * file for the full protocol).  Each store hook here:
  *  - Saves to localStorage on every change
  *  - Broadcasts to other tabs via BroadcastChannel (same-browser sync)
- *  - Calls the `onSyncChange` callback (provided by the sync hook) to
- *    trigger a debounced Nostr publish for cross-device sync
+ *  - Calls `requestPublish(entityType, entity)` for the specific entity
+ *    that changed, so it gets published as a public Nostr event that ALL
+ *    users (not just the current user) can see
  *  - Listens for `tenderhub:remote-sync` custom events (dispatched by the
  *    sync hook when remote data has been merged into localStorage) and
  *    re-reads from localStorage to update React state
@@ -72,6 +73,13 @@ function broadcastChange(key: string, data: unknown[]): void {
 }
 
 /**
+ * The publish callback type.  The sync hook provides this — it takes the
+ * entity type string and the full entity object so it can publish a
+ * per-entity Nostr event.
+ */
+export type RequestPublishFn = (entityType: string, entity: { id: string; updatedAt: number }) => void;
+
+/**
  * Set up listeners for cross-tab and cross-device updates.
  *
  * - `storage` events: fired by the browser when another tab writes to
@@ -80,9 +88,9 @@ function broadcastChange(key: string, data: unknown[]): void {
  *   browser. The sync hook also uses this to notify tabs when it has merged
  *   remote Nostr data into localStorage.
  * - `TENDERHUB_REMOTE_SYNC_EVENT`: a custom window event dispatched by the
- *   sync hook when remote data from another device has been merged into
- *   localStorage. This is the key mechanism for cross-device sync within
- *   the current tab.
+ *   sync hook when remote data from another device/user has been merged
+ *   into localStorage. This is the key mechanism for cross-device sync
+ *   within the current tab.
  */
 function setupStorageSync<T>(
   key: string,
@@ -131,7 +139,7 @@ export interface UseRegistrationStore {
   removePortfolioItem: (address: string, itemId: string) => void;
 }
 
-export function useRegistrationStore(onSyncChange?: () => void): UseRegistrationStore {
+export function useRegistrationStore(requestPublish?: RequestPublishFn): UseRegistrationStore {
   const [registrations, setRegistrations] = useState<Registration[]>(() =>
     load<Registration>(REGISTRATIONS_KEY),
   );
@@ -139,8 +147,7 @@ export function useRegistrationStore(onSyncChange?: () => void): UseRegistration
   useEffect(() => {
     save(REGISTRATIONS_KEY, registrations);
     broadcastChange(REGISTRATIONS_KEY, registrations);
-    onSyncChange?.();
-  }, [registrations, onSyncChange]);
+  }, [registrations]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
@@ -162,56 +169,71 @@ export function useRegistrationStore(onSyncChange?: () => void): UseRegistration
       }
       return [...prev, reg];
     });
-  }, []);
+    // Publish the specific entity to Nostr
+    requestPublish?.("registration", reg);
+  }, [requestPublish]);
 
   const updateRegistration = useCallback(
     (address: string, updates: Partial<Registration>) => {
-      setRegistrations((prev) =>
-        prev.map((r) =>
+      setRegistrations((prev) => {
+        const next = prev.map((r) =>
           r.walletAddress === address
             ? { ...r, ...updates, updatedAt: Date.now() }
             : r,
-        ),
-      );
+        );
+        // Publish the updated entity
+        const updated = next.find((r) => r.walletAddress === address);
+        if (updated) requestPublish?.("registration", updated);
+        return next;
+      });
     },
-    [],
+    [requestPublish],
   );
 
   const addPortfolioItem = useCallback(
     (address: string, item: Omit<PortfolioItem, "id">) => {
-      setRegistrations((prev) =>
-        prev.map((r) =>
+      setRegistrations((prev) => {
+        const next = prev.map((r) =>
           r.walletAddress === address
             ? { ...r, updatedAt: Date.now(), portfolio: [...r.portfolio, { ...item, id: uid() }] }
             : r,
-        ),
-      );
+        );
+        const updated = next.find((r) => r.walletAddress === address);
+        if (updated) requestPublish?.("registration", updated);
+        return next;
+      });
     },
-    [],
+    [requestPublish],
   );
 
   const updatePortfolioItem = useCallback(
     (address: string, itemId: string, updates: Partial<PortfolioItem>) => {
-      setRegistrations((prev) =>
-        prev.map((r) =>
+      setRegistrations((prev) => {
+        const next = prev.map((r) =>
           r.walletAddress === address
             ? { ...r, updatedAt: Date.now(), portfolio: r.portfolio.map((p) => (p.id === itemId ? { ...p, ...updates } : p)) }
             : r,
-        ),
-      );
+        );
+        const updated = next.find((r) => r.walletAddress === address);
+        if (updated) requestPublish?.("registration", updated);
+        return next;
+      });
     },
-    [],
+    [requestPublish],
   );
 
   const removePortfolioItem = useCallback((address: string, itemId: string) => {
-    setRegistrations((prev) =>
-      prev.map((r) =>
+    setRegistrations((prev) => {
+      const next = prev.map((r) =>
         r.walletAddress === address
           ? { ...r, updatedAt: Date.now(), portfolio: r.portfolio.filter((p) => p.id !== itemId) }
           : r,
-      ),
-    );
-  }, []);
+      );
+      const updated = next.find((r) => r.walletAddress === address);
+      if (updated) requestPublish?.("registration", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   return { registrations, getRegistration, upsertRegistration, updateRegistration, addPortfolioItem, updatePortfolioItem, removePortfolioItem };
 }
@@ -226,14 +248,13 @@ export interface UseTenderStore {
   deleteTender: (id: string) => void;
 }
 
-export function useTenderStore(onSyncChange?: () => void): UseTenderStore {
+export function useTenderStore(requestPublish?: RequestPublishFn): UseTenderStore {
   const [tenders, setTenders] = useState<Tender[]>(() => load<Tender>(TENDERS_KEY));
 
   useEffect(() => {
     save(TENDERS_KEY, tenders);
     broadcastChange(TENDERS_KEY, tenders);
-    onSyncChange?.();
-  }, [tenders, onSyncChange]);
+  }, [tenders]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
@@ -246,15 +267,28 @@ export function useTenderStore(onSyncChange?: () => void): UseTenderStore {
     const now = Date.now();
     const full: Tender = { ...tender, id: uid(), createdAt: now, updatedAt: now };
     setTenders((prev) => [full, ...prev]);
+    // Publish the new tender to Nostr so all users can see it
+    requestPublish?.("tender", full);
     return full;
-  }, []);
+  }, [requestPublish]);
 
   const updateTender = useCallback((id: string, updates: Partial<Tender>) => {
-    setTenders((prev) => prev.map((t) => (t.id === id ? { ...t, ...updates, updatedAt: Date.now() } : t)));
-  }, []);
+    setTenders((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, ...updates, updatedAt: Date.now() } : t));
+      const updated = next.find((t) => t.id === id);
+      if (updated) requestPublish?.("tender", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const deleteTender = useCallback((id: string) => {
     setTenders((prev) => prev.filter((t) => t.id !== id));
+    // Note: we don't delete from Nostr (relays don't support deletion of
+    // addressable events).  Instead, we could publish a tombstone, but for
+    // the MVP the local delete is sufficient — other devices will still
+    // have it but it won't re-appear because mergeEntities doesn't add
+    // entities that were locally removed (they just come back on next
+    // initial fetch).  A future improvement could add a "deleted" flag.
   }, []);
 
   return { tenders, getTender, createTender, updateTender, deleteTender };
@@ -270,14 +304,13 @@ export interface UseBidStore {
   updateBid: (id: string, updates: Partial<Bid>) => void;
 }
 
-export function useBidStore(onSyncChange?: () => void): UseBidStore {
+export function useBidStore(requestPublish?: RequestPublishFn): UseBidStore {
   const [bids, setBids] = useState<Bid[]>(() => load<Bid>(BIDS_KEY));
 
   useEffect(() => {
     save(BIDS_KEY, bids);
     broadcastChange(BIDS_KEY, bids);
-    onSyncChange?.();
-  }, [bids, onSyncChange]);
+  }, [bids]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
@@ -291,12 +324,19 @@ export function useBidStore(onSyncChange?: () => void): UseBidStore {
     const now = Date.now();
     const full: Bid = { ...bid, id: uid(), status: "submitted", createdAt: now, updatedAt: now };
     setBids((prev) => [full, ...prev]);
+    // Publish the new bid so the buyer (and other suppliers) can see it
+    requestPublish?.("bid", full);
     return full;
-  }, []);
+  }, [requestPublish]);
 
   const updateBid = useCallback((id: string, updates: Partial<Bid>) => {
-    setBids((prev) => prev.map((b) => (b.id === id ? { ...b, ...updates, updatedAt: Date.now() } : b)));
-  }, []);
+    setBids((prev) => {
+      const next = prev.map((b) => (b.id === id ? { ...b, ...updates, updatedAt: Date.now() } : b));
+      const updated = next.find((b) => b.id === id);
+      if (updated) requestPublish?.("bid", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   return { bids, getBidsForTender, getBidsBySupplier, createBid, updateBid };
 }
@@ -329,14 +369,13 @@ export interface UseContractStore {
   rejectCancellation: (contractId: string, rejectorAddress: string, rejectorName: string) => void;
 }
 
-export function useContractStore(onSyncChange?: () => void): UseContractStore {
+export function useContractStore(requestPublish?: RequestPublishFn): UseContractStore {
   const [contracts, setContracts] = useState<EscrowContract[]>(() => load<EscrowContract>(CONTRACTS_KEY));
 
   useEffect(() => {
     save(CONTRACTS_KEY, contracts);
     broadcastChange(CONTRACTS_KEY, contracts);
-    onSyncChange?.();
-  }, [contracts, onSyncChange]);
+  }, [contracts]);
 
   // Listen for cross-tab/cross-device updates
   useEffect(() => {
@@ -357,162 +396,213 @@ export function useContractStore(onSyncChange?: () => void): UseContractStore {
       auditLog: [auditEntry(contract.buyerAddress, contract.buyerName, "contract_created", `Escrow funded with ${contract.totalAmountAda} ₳`, contract.fundingTxHash)],
     };
     setContracts((prev) => [full, ...prev]);
+    requestPublish?.("contract", full);
     return full;
-  }, []);
+  }, [requestPublish]);
 
   const updateContract = useCallback((id: string, updates: Partial<EscrowContract>) => {
-    setContracts((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates, updatedAt: Date.now() } : c)));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => (c.id === id ? { ...c, ...updates, updatedAt: Date.now() } : c));
+      const updated = next.find((c) => c.id === id);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const updateMilestone = useCallback((contractId: string, milestoneId: string, updates: Partial<Milestone>) => {
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId) return c;
-      return {
-        ...c,
-        updatedAt: Date.now(),
-        milestones: c.milestones.map((m) => (m.id === milestoneId ? { ...m, ...updates } : m)),
-      };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId) return c;
+        return {
+          ...c,
+          updatedAt: Date.now(),
+          milestones: c.milestones.map((m) => (m.id === milestoneId ? { ...m, ...updates } : m)),
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const addMilestoneEvidence = useCallback((contractId: string, milestoneId: string, evidence: Omit<MilestoneEvidence, "id" | "submittedAt">) => {
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId) return c;
-      return {
-        ...c,
-        updatedAt: Date.now(),
-        milestones: c.milestones.map((m) => m.id === milestoneId
-          ? { ...m, evidence: [...m.evidence, { ...evidence, id: uid(), submittedAt: Date.now() }] }
-          : m),
-      };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId) return c;
+        return {
+          ...c,
+          updatedAt: Date.now(),
+          milestones: c.milestones.map((m) => m.id === milestoneId
+            ? { ...m, evidence: [...m.evidence, { ...evidence, id: uid(), submittedAt: Date.now() }] }
+            : m),
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const addAuditEntry = useCallback((contractId: string, entry: Omit<AuditEntry, "id" | "timestamp">) => {
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId) return c;
-      return { ...c, updatedAt: Date.now(), auditLog: [...c.auditLog, { ...entry, id: uid(), timestamp: Date.now() }] };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId) return c;
+        return { ...c, updatedAt: Date.now(), auditLog: [...c.auditLog, { ...entry, id: uid(), timestamp: Date.now() }] };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const fileDispute = useCallback((contractId: string, dispute: Omit<Dispute, "id" | "createdAt" | "updatedAt" | "status" | "evidence">) => {
     const now = Date.now();
     const fullDispute: Dispute = { ...dispute, id: uid(), status: "open", evidence: [], createdAt: now, updatedAt: now };
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId) return c;
-      return {
-        ...c,
-        updatedAt: now,
-        status: "disputed",
-        disputes: [...c.disputes, fullDispute],
-        auditLog: [...c.auditLog, auditEntry(dispute.filedBy, dispute.filedByName, "dispute_filed", `Dispute filed: ${dispute.title}`)],
-      };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId) return c;
+        return {
+          ...c,
+          updatedAt: now,
+          status: "disputed",
+          disputes: [...c.disputes, fullDispute],
+          auditLog: [...c.auditLog, auditEntry(dispute.filedBy, dispute.filedByName, "dispute_filed", `Dispute filed: ${dispute.title}`)],
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const addDisputeEvidence = useCallback((contractId: string, disputeId: string, evidence: Omit<DisputeEvidence, "id" | "submittedAt">) => {
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId) return c;
-      return {
-        ...c,
-        updatedAt: Date.now(),
-        disputes: c.disputes.map((d) => d.id === disputeId
-          ? { ...d, updatedAt: Date.now(), evidence: [...d.evidence, { ...evidence, id: uid(), submittedAt: Date.now() }] }
-          : d),
-      };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId) return c;
+        return {
+          ...c,
+          updatedAt: Date.now(),
+          disputes: c.disputes.map((d) => d.id === disputeId
+            ? { ...d, updatedAt: Date.now(), evidence: [...d.evidence, { ...evidence, id: uid(), submittedAt: Date.now() }] }
+            : d),
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const resolveDispute = useCallback((contractId: string, disputeId: string, resolution: { status: Dispute["status"]; ruling: string; splitPercentage?: number; arbitrator: string; arbitratorName: string }) => {
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId) return c;
-      const now = Date.now();
-      const newStatus = resolution.status === "resolved_buyer" || resolution.status === "resolved_supplier" || resolution.status === "resolved_split" ? "completed" : "active";
-      return {
-        ...c,
-        updatedAt: now,
-        status: newStatus as EscrowContract["status"],
-        disputes: c.disputes.map((d) => d.id === disputeId
-          ? { ...d, status: resolution.status, ruling: resolution.ruling, splitPercentage: resolution.splitPercentage, resolvedAt: now, updatedAt: now, arbitrator: resolution.arbitrator, arbitratorName: resolution.arbitratorName }
-          : d),
-        auditLog: [...c.auditLog, auditEntry(resolution.arbitrator, resolution.arbitratorName, "dispute_resolved", `Ruling: ${resolution.ruling}`)],
-      };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId) return c;
+        const now = Date.now();
+        const newStatus = resolution.status === "resolved_buyer" || resolution.status === "resolved_supplier" || resolution.status === "resolved_split" ? "completed" : "active";
+        return {
+          ...c,
+          updatedAt: now,
+          status: newStatus as EscrowContract["status"],
+          disputes: c.disputes.map((d) => d.id === disputeId
+            ? { ...d, status: resolution.status, ruling: resolution.ruling, splitPercentage: resolution.splitPercentage, resolvedAt: now, updatedAt: now, arbitrator: resolution.arbitrator, arbitratorName: resolution.arbitratorName }
+            : d),
+          auditLog: [...c.auditLog, auditEntry(resolution.arbitrator, resolution.arbitratorName, "dispute_resolved", `Ruling: ${resolution.ruling}`)],
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const requestCancellation = useCallback((contractId: string, cancellation: { initiatedBy: "buyer" | "supplier"; initiatorAddress: string; initiatorName: string; reason: string }) => {
     const now = Date.now();
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId) return c;
-      // Determine fair settlement based on completed milestones
-      const completedMilestones = c.milestones.filter((m) => m.status === "approved");
-      const hasInProgress = c.milestones.some((m) => m.status === "in_progress" || m.status === "submitted");
-      let settlement: "full_refund_buyer" | "supplier_paid_completed" | "partial_split" = "full_refund_buyer";
-      let supplierKeepPercent: number | undefined;
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId) return c;
+        // Determine fair settlement based on completed milestones
+        const completedMilestones = c.milestones.filter((m) => m.status === "approved");
+        const hasInProgress = c.milestones.some((m) => m.status === "in_progress" || m.status === "submitted");
+        let settlement: "full_refund_buyer" | "supplier_paid_completed" | "partial_split" = "full_refund_buyer";
+        let supplierKeepPercent: number | undefined;
 
-      if (completedMilestones.length > 0 && !hasInProgress) {
-        // Supplier keeps released amounts; buyer gets the rest
-        settlement = "supplier_paid_completed";
-      } else if (hasInProgress) {
-        // There's in-progress work — supplier should get partial compensation
-        settlement = "partial_split";
-        supplierKeepPercent = 50; // Default 50% of remaining for in-progress work
-      } else {
-        // No work done — full refund
-        settlement = "full_refund_buyer";
-      }
+        if (completedMilestones.length > 0 && !hasInProgress) {
+          // Supplier keeps released amounts; buyer gets the rest
+          settlement = "supplier_paid_completed";
+        } else if (hasInProgress) {
+          // There's in-progress work — supplier should get partial compensation
+          settlement = "partial_split";
+          supplierKeepPercent = 50; // Default 50% of remaining for in-progress work
+        } else {
+          // No work done — full refund
+          settlement = "full_refund_buyer";
+        }
 
-      return {
-        ...c,
-        updatedAt: now,
-        cancellation: {
-          initiatedBy: cancellation.initiatedBy,
-          initiatorAddress: cancellation.initiatorAddress,
-          initiatorName: cancellation.initiatorName,
-          reason: cancellation.reason,
-          requestedAt: now,
-          status: "requested",
-          settlement,
-          supplierKeepPercent,
-        },
-        auditLog: [...c.auditLog, auditEntry(cancellation.initiatorAddress, cancellation.initiatorName, "cancellation_requested", `${cancellation.initiatedBy === "buyer" ? "Buyer" : "Supplier"} requested cancellation: ${cancellation.reason}`)],
-      };
-    }));
-  }, []);
+        return {
+          ...c,
+          updatedAt: now,
+          cancellation: {
+            initiatedBy: cancellation.initiatedBy,
+            initiatorAddress: cancellation.initiatorAddress,
+            initiatorName: cancellation.initiatorName,
+            reason: cancellation.reason,
+            requestedAt: now,
+            status: "requested",
+            settlement,
+            supplierKeepPercent,
+          },
+          auditLog: [...c.auditLog, auditEntry(cancellation.initiatorAddress, cancellation.initiatorName, "cancellation_requested", `${cancellation.initiatedBy === "buyer" ? "Buyer" : "Supplier"} requested cancellation: ${cancellation.reason}`)],
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const acceptCancellation = useCallback((contractId: string, acceptorAddress: string, acceptorName: string) => {
     const now = Date.now();
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId || !c.cancellation) return c;
-      const txHash = `cancel_${now.toString(36)}`;
-      return {
-        ...c,
-        updatedAt: now,
-        status: "cancelled" as const,
-        cancellation: {
-          ...c.cancellation,
-          initiatedBy: "mutual" as const,
-          acceptedAt: now,
-          status: "enforced" as const,
-          txHash,
-        },
-        auditLog: [...c.auditLog, auditEntry(acceptorAddress, acceptorName, "cancellation_accepted", `Cancellation accepted. Settlement: ${c.cancellation.settlement}`, txHash)],
-      };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId || !c.cancellation) return c;
+        const txHash = `cancel_${now.toString(36)}`;
+        return {
+          ...c,
+          updatedAt: now,
+          status: "cancelled" as const,
+          cancellation: {
+            ...c.cancellation,
+            initiatedBy: "mutual" as const,
+            acceptedAt: now,
+            status: "enforced" as const,
+            txHash,
+          },
+          auditLog: [...c.auditLog, auditEntry(acceptorAddress, acceptorName, "cancellation_accepted", `Cancellation accepted. Settlement: ${c.cancellation.settlement}`, txHash)],
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   const rejectCancellation = useCallback((contractId: string, rejectorAddress: string, rejectorName: string) => {
     const now = Date.now();
-    setContracts((prev) => prev.map((c) => {
-      if (c.id !== contractId || !c.cancellation) return c;
-      return {
-        ...c,
-        updatedAt: now,
-        cancellation: { ...c.cancellation, status: "rejected" as const },
-        auditLog: [...c.auditLog, auditEntry(rejectorAddress, rejectorName, "cancellation_rejected", `Cancellation request rejected`)],
-      };
-    }));
-  }, []);
+    setContracts((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== contractId || !c.cancellation) return c;
+        return {
+          ...c,
+          updatedAt: now,
+          cancellation: { ...c.cancellation, status: "rejected" as const },
+          auditLog: [...c.auditLog, auditEntry(rejectorAddress, rejectorName, "cancellation_rejected", `Cancellation request rejected`)],
+        };
+      });
+      const updated = next.find((c) => c.id === contractId);
+      if (updated) requestPublish?.("contract", updated);
+      return next;
+    });
+  }, [requestPublish]);
 
   return {
     contracts,

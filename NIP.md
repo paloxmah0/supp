@@ -101,23 +101,89 @@ The smart contract / code verifies that:
 
 ## Data Layer
 
-### MVP: localStorage + Cross-Device Sync
+### MVP: localStorage + Cross-Device & Cross-User Sync
 
-For the MVP, data is stored in localStorage. Cross-device synchronization uses:
+For the MVP, data is stored in localStorage. Cross-device and cross-user
+synchronization uses Nostr as a real-time pub/sub layer:
 
 1. **BroadcastChannel API** — for real-time sync across browser tabs on the same device
 2. **Storage events** — for cross-tab sync when data changes
-3. **Nostr NIP-78 (appData)** — for cross-device sync via Nostr relays
-   - All platform state (registrations, tenders, bids, contracts) is published as a NIP-78 addressable event (kind 30078) with d-tag `tenderhub-state`
-   - The event is signed with the user's Nostr identity (nsec, NIP-07 extension, or NIP-46 bunker) via Nostrify's signer — not raw `window.nostr`
-   - The event is published to all configured write relays via `nostr.event()`
-   - On mount, each device queries for the latest kind 30078 event and opens a live subscription (`nostr.req()`) for real-time updates
-   - A 15-second polling fallback (`nostr.query()`) catches updates if the live subscription fails
-   - Incoming remote state is **merged** per-entity (by `id`, last-write-wins by `updatedAt`) — not blindly overwritten — so concurrent creates on different devices both survive
-   - Changes are debounced (2-second delay) to avoid flooding relays
-   - Works with any Nostr login method (nsec, extension, NIP-46 bunker) — no separate NIP-07 extension required
+3. **Nostr NIP-78 (appData)** — for cross-device AND cross-user sync via Nostr relays
 
-This fixes the issue where adding a tender on a laptop didn't update on a phone — data now syncs through Nostr relays.
+#### Public Protocol (Cross-User Discovery)
+
+Every TenderHub entity (registration, tender, bid, contract) is published as
+a **separate, public** NIP-78 addressable event:
+
+```
+kind: 30078
+tags: [
+  ["t", "tenderhub"],           ← global discovery tag (no author filter)
+  ["d", "<entity-type>:<id>"],  ← unique per entity
+  ["entity", "<type>"],         ← "tender" | "bid" | "contract" | "registration"
+  ["entity_id", "<id>"],
+  ["updated_at", "<timestamp>"],
+]
+content: JSON of the full entity object
+```
+
+The `#t` = `tenderhub` tag is the **global discovery tag**. Any user on any
+device subscribes to `{ kinds: [30078], "#t": ["tenderhub"] }` — NO `authors`
+filter — so a buyer using Nostr account A can see a tender published by a
+supplier using account B. This is how different users discover each other's
+tenders, bids, and contracts.
+
+Each entity type gets a distinct `d`-tag prefix so relays store them as
+separate addressable events (not one giant blob):
+
+| Entity type | d-tag format | Published when |
+|-------------|---------------|----------------|
+| `tender` | `tender:<id>` | Buyer creates/updates a tender |
+| `bid` | `bid:<id>` | Supplier submits/updates a bid |
+| `contract` | `contract:<id>` | Escrow contract created/updated (milestone approved, dispute filed, etc.) |
+| `registration` | `registration:<id>` | User registers/updates their profile |
+
+#### Merge Strategy (CRDT)
+
+Incoming remote events are merged per-entity using last-write-wins by
+`updatedAt` timestamp. This is a CRDT-style merge:
+
+- Concurrent creates on different devices both survive (different `id`s)
+- Updates from the device with the newer `updatedAt` win
+- If `updatedAt` is equal or older, the remote is ignored (prevents echo loops)
+
+#### Echo Prevention
+
+When applying remote state, a flag (`isApplyingRemote`) prevents the store
+hooks from immediately re-publishing the same entity, which would create an
+infinite loop. Additionally, the merge function only replaces an entity if
+the remote `updatedAt` is **strictly greater** than the local one.
+
+#### Subscription Lifecycle
+
+On mount, each device:
+1. **Initial fetch** — queries the last 500 events with `#t` = `tenderhub`
+   (sorted oldest-first so the latest `updatedAt` wins the merge)
+2. **Live subscription** — opens `nostr.req()` for real-time updates from ALL users
+3. **Polling fallback** — every 15s, re-fetches recent events if the live
+   subscription silently dies
+
+#### Publishing
+
+Changes are debounced (1.5s per entity) to avoid flooding relays. Each entity
+id gets its own timer, so rapid edits to different entities don't block each
+other. Publishing uses the user's Nostrify signer (nsec, NIP-07 extension, or
+NIP-46 bunker) and publishes to all configured write relays via `nostr.event()`.
+
+#### Works with any Nostr login method
+
+No separate NIP-07 browser extension is required — the sync uses Nostrify's
+signer abstraction, so it works with nsec (extension), NIP-46 bunker, or
+browser extension logins.
+
+This fixes the issue where tenders posted on one device/account didn't appear
+on other devices — data now syncs through Nostr relays as public events that
+all TenderHub users can discover.
 
 ### Production Roadmap
 - **Cardano indexer** (Blockfrost/Carp) for on-chain escrow state
