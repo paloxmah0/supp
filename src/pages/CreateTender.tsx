@@ -32,7 +32,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/useToast";
-import { signMessage } from "@/lib/cardano";
+import { signMessageWithTimeout } from "@/lib/cardano";
 import { cn } from "@/lib/utils";
 import type { AgpoCategory, ContractType, PaymentMethod, TenderPublicationType, TenderRequirement } from "@/lib/types";
 import {
@@ -175,6 +175,21 @@ export default function CreateTender() {
     );
   }
 
+  if (registration.kyc.status !== "verified") {
+    return (
+      <Layout>
+        <div className="mx-auto max-w-2xl px-4 py-20 text-center">
+          <Shield className="mx-auto size-12 text-amber-600" />
+          <h2 className="mt-4 text-2xl font-bold">KYC verification required</h2>
+          <p className="mt-2 text-muted-foreground">
+            You must be KYC-verified to post tenders. Your current status: <span className="font-medium capitalize">{registration.kyc.status.replace(/_/g, " ")}</span>
+          </p>
+          <Button className="mt-6" asChild><Link to="/suppliers">Get Verified</Link></Button>
+        </div>
+      </Layout>
+    );
+  }
+
   const budgetNum = parseInt(form.budgetAda) || 0;
   const milestoneTotal = milestones.reduce((s, m) => s + (parseInt(m.amountAda) || 0), 0);
   const milestonesValid = contractType !== "milestone" || (milestones.length >= 2 && milestoneTotal === budgetNum);
@@ -245,7 +260,7 @@ export default function CreateTender() {
 
       // Sign the escrow funding proof
       const message = `TenderHub Escrow:${session.address}:${budgetAda}:${contractType}:${paymentMethod}:${Date.now()}`;
-      await signMessage(session.api, session.address, message);
+      await signMessageWithTimeout(session.api, session.address, message, 30000);
 
       const tender = tenders.createTender({
         buyerAddress: session.address,

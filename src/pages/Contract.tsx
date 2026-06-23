@@ -36,7 +36,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/useToast";
-import { signMessage } from "@/lib/cardano";
+import { signMessageWithTimeout, signEvidence } from "@/lib/cardano";
 import { cn } from "@/lib/utils";
 import type { ContractType, DisputeScope, Milestone, MilestoneStatus } from "@/lib/types";
 
@@ -102,11 +102,13 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `StartMilestone:${contract.id}:${milestone.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       contracts.updateMilestone(contract.id, milestone.id, { status: "in_progress" });
       contracts.addAuditEntry(contract.id, { actor: session.address, actorName: registrations.getRegistration(session.address)?.name ?? "Unknown", action: "milestone_started", details: `Started: ${milestone.title}` });
       toast({ title: "Milestone started" });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to start milestone", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   const handleSubmitMilestone = async (milestone: Milestone) => {
@@ -114,11 +116,13 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `SubmitMilestone:${contract.id}:${milestone.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       contracts.updateMilestone(contract.id, milestone.id, { status: "submitted", submittedAt: Date.now() });
       contracts.addAuditEntry(contract.id, { actor: session.address, actorName: registrations.getRegistration(session.address)?.name ?? "Unknown", action: "milestone_submitted", details: `Submitted evidence for: ${milestone.title}` });
       toast({ title: "Milestone submitted", description: "Awaiting buyer approval." });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to submit milestone", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   const handleApproveMilestone = async (milestone: Milestone) => {
@@ -126,7 +130,7 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `ApproveMilestone:${contract.id}:${milestone.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       const txHash = `release_${Date.now().toString(36)}`;
       contracts.updateMilestone(contract.id, milestone.id, { status: "approved", approvedAt: Date.now(), releaseTxHash: txHash });
       const newReleased = contract.releasedAmountAda + milestone.amountAda;
@@ -137,7 +141,9 @@ export default function ContractPage() {
       });
       contracts.addAuditEntry(contract.id, { actor: session.address, actorName: registrations.getRegistration(session.address)?.name ?? "Unknown", action: "milestone_approved", details: `Approved: ${milestone.title} — Released ${milestone.amountAda.toLocaleString()} ₳`, txHash });
       toast({ title: "Milestone approved", description: `${milestone.amountAda.toLocaleString()} ₳ released to supplier.` });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to approve milestone", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   const handleRejectMilestone = async (milestone: Milestone) => {
@@ -145,11 +151,13 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `RejectMilestone:${contract.id}:${milestone.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       contracts.updateMilestone(contract.id, milestone.id, { status: "rejected" });
       contracts.addAuditEntry(contract.id, { actor: session.address, actorName: registrations.getRegistration(session.address)?.name ?? "Unknown", action: "milestone_rejected", details: `Rejected: ${milestone.title}` });
       toast({ variant: "destructive", title: "Milestone rejected", description: "Supplier must redo and resubmit." });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to reject milestone", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   // ─── Dispute Actions ─────────────────────────────────────────────────
@@ -159,7 +167,7 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `FileDispute:${contract.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       const reg = registrations.getRegistration(session.address);
       contracts.fileDispute(contract.id, {
         contractId: contract.id,
@@ -177,7 +185,9 @@ export default function ContractPage() {
       toast({ title: "Dispute filed", description: "Contract is now frozen. An arbitrator will be assigned." });
       setShowDisputeForm(false);
       setDisputeForm({ title: "", description: "", scope: "milestone", milestoneId: "" });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to file dispute", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   const handleResolveDispute = async (disputeId: string) => {
@@ -185,7 +195,7 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `ResolveDispute:${contract.id}:${disputeId}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       const status = resolutionForm.buyerPercent === 100 ? "resolved_buyer" : resolutionForm.buyerPercent === 0 ? "resolved_supplier" : "resolved_split";
       contracts.resolveDispute(contract.id, disputeId, {
         status,
@@ -195,7 +205,9 @@ export default function ContractPage() {
         arbitratorName: registrations.getRegistration(session.address)?.name ?? "Arbitrator",
       });
       toast({ title: "Dispute resolved", description: `Funds split: ${resolutionForm.buyerPercent}% buyer / ${100 - resolutionForm.buyerPercent}% supplier.` });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to resolve dispute", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   // ─── Cancellation Actions ────────────────────────────────────────────
@@ -205,7 +217,7 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `RequestCancellation:${contract.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       const reg = registrations.getRegistration(session.address);
       contracts.requestCancellation(contract.id, {
         initiatedBy: isBuyer ? "buyer" : "supplier",
@@ -216,7 +228,9 @@ export default function ContractPage() {
       toast({ title: "Cancellation requested", description: "Waiting for the other party to accept or reject." });
       setShowCancelForm(false);
       setCancelForm({ reason: "" });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to request cancellation", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   const handleAcceptCancellation = async () => {
@@ -224,11 +238,13 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `AcceptCancellation:${contract.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       const reg = registrations.getRegistration(session.address);
       contracts.acceptCancellation(contract.id, session.address, reg?.name ?? "Unknown");
       toast({ title: "Cancellation accepted", description: "Contract cancelled. Funds settled per the agreement." });
-    } catch { } finally { setIsSigning(false); }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to accept cancellation", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   const handleRejectCancellation = async () => {
@@ -236,11 +252,13 @@ export default function ContractPage() {
     setIsSigning(true);
     try {
       const msg = `RejectCancellation:${contract.id}:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, msg);
+      await signMessageWithTimeout(session.api, session.address, msg, 30000);
       const reg = registrations.getRegistration(session.address);
       contracts.rejectCancellation(contract.id, session.address, reg?.name ?? "Unknown");
-      toast({ title: "Cancellation rejected", description: "Contract continues. File a dispute if needed." });
-    } catch { } finally { setIsSigning(false); }
+      toast({ title: "Cancellation rejected", description: "Contract continues. If the rejection was in bad faith, the other party can file a dispute and the arbitrator may penalize you." });
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to reject cancellation", description: err instanceof Error ? err.message : "Wallet signing failed." });
+    } finally { setIsSigning(false); }
   };
 
   return (
@@ -320,10 +338,27 @@ export default function ContractPage() {
                     onSubmit={() => handleSubmitMilestone(m)}
                     onApprove={() => handleApproveMilestone(m)}
                     onReject={() => handleRejectMilestone(m)}
-                    onAddEvidence={(desc) => {
+                    onAddEvidence={async (desc) => {
                       if (!session) return;
-                      contracts.addMilestoneEvidence(contract.id, m.id, { description: desc, attachments: [], submittedBy: session.address });
-                      toast({ title: "Evidence added" });
+                      try {
+                        // Sign the evidence to make it tamper-proof
+                        const { contentHash, signature } = await signEvidence(
+                          session.api,
+                          session.address,
+                          { description: desc, submittedBy: session.address, attachments: [] },
+                        );
+                        contracts.addMilestoneEvidence(contract.id, m.id, {
+                          description: desc,
+                          attachments: [],
+                          submittedBy: session.address,
+                          contentHash,
+                          signature,
+                          locked: true,
+                        });
+                        toast({ title: "Evidence submitted", description: "Tamper-proof: hashed & wallet-signed. Cannot be modified." });
+                      } catch (err) {
+                        toast({ variant: "destructive", title: "Failed to submit evidence", description: err instanceof Error ? err.message : "Wallet signing failed." });
+                      }
                     }}
                   />
                 ))}
@@ -466,6 +501,7 @@ export default function ContractPage() {
                       <li><strong>Completed milestones:</strong> Supplier keeps all released payments</li>
                       <li><strong>In-progress work:</strong> Remaining funds split 50/50 by default</li>
                       <li><strong>No work started:</strong> Full refund to buyer</li>
+                      <li><strong>Bad-faith rejection:</strong> If one party unjustifiably rejects a cancellation, the arbitrator can penalize them up to 25% of their settlement share</li>
                     </ul>
                     <div className="space-y-1.5">
                       <Label className="text-xs">Reason for cancellation *</Label>
@@ -537,14 +573,30 @@ export default function ContractPage() {
                         </p>
                       )}
                       {contract.cancellation.txHash && <p className="text-xs font-mono">TX: {contract.cancellation.txHash}</p>}
+                      {contract.cancellation.penalty && (
+                        <div className="mt-2 rounded-lg bg-red-50 dark:bg-red-950/30 p-2 text-xs text-red-800 dark:text-red-300 space-y-1">
+                          <p className="font-medium">⚠️ Bad-Faith Penalty Applied</p>
+                          <p>Penalized party: <span className="font-medium capitalize">{contract.cancellation.penalty.penalizedParty}</span></p>
+                          <p>Reason: {contract.cancellation.penalty.reason}</p>
+                          <p>Penalty: {contract.cancellation.penalty.penaltyAmountAda.toLocaleString()} ₳ ({contract.cancellation.penalty.penaltyPercent}% of total contract)</p>
+                          <p>Applied by: {contract.cancellation.penalty.appliedBy}</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
 
                 {/* Rejected cancellation */}
                 {contract.cancellation?.status === "rejected" && (
-                  <div className="rounded-lg border p-3 text-sm text-muted-foreground">
-                    <Ban className="inline size-4 mr-1" /> Cancellation was rejected. Contract continues.
+                  <div className="rounded-lg border-2 border-orange-200 dark:border-orange-900 p-3 space-y-2">
+                    <div className="flex items-center gap-2 text-sm text-orange-700 dark:text-orange-400">
+                      <Ban className="inline size-4" /> Cancellation was rejected. Contract continues.
+                    </div>
+                    <div className="rounded-lg bg-orange-50 dark:bg-orange-950/30 p-3 text-xs text-orange-800 dark:text-orange-300 space-y-1">
+                      <p className="font-medium">⚠️ Bad-faith rejection penalty</p>
+                      <p>If the rejection was unjustified (the other party's work was legitimate), they can file a dispute. The arbitrator can then penalize the rejector by deducting up to 25% of their settlement share and awarding it to the wronged party.</p>
+                      <p className="text-orange-600 dark:text-orange-400 mt-1">Filed by: {contract.cancellation.initiatorName} · Rejected by: {session?.address === contract.cancellation.initiatorAddress ? "The other party" : "You"}</p>
+                    </div>
                   </div>
                 )}
 
@@ -650,9 +702,10 @@ function MilestoneCard({
 }: {
   milestone: Milestone; index: number; isBuyer: boolean; isSupplier: boolean; isFrozen: boolean; isSigning: boolean;
   showEvidenceForm: boolean; onToggleEvidence: () => void; onStart: () => void; onSubmit: () => void; onApprove: () => void; onReject: () => void;
-  onAddEvidence: (desc: string) => void;
+  onAddEvidence: (desc: string) => Promise<void>;
 }) {
   const [evidenceDesc, setEvidenceDesc] = useState("");
+  const [isSigningEvidence, setIsSigningEvidence] = useState(false);
   const statusColors: Record<MilestoneStatus, string> = {
     pending: "bg-muted text-muted-foreground",
     in_progress: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
@@ -699,7 +752,17 @@ function MilestoneCard({
               {milestone.evidence.map((e) => (
                 <div key={e.id} className="text-sm flex items-start gap-2">
                   <FileText className="size-3.5 text-muted-foreground mt-0.5 shrink-0" />
-                  <span>{e.description}</span>
+                  <div className="flex-1">
+                    <span>{e.description}</span>
+                    {e.locked && (
+                      <Badge variant="outline" className="ml-2 text-xs text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800 gap-1">
+                        <Lock className="size-2.5" /> Tamper-Proof
+                      </Badge>
+                    )}
+                    {e.contentHash && (
+                      <div className="text-xs text-muted-foreground font-mono mt-0.5">Hash: {e.contentHash.slice(0, 16)}…</div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -709,10 +772,29 @@ function MilestoneCard({
           {showEvidenceForm && (
             <div className="mt-3 rounded-lg border-2 border-dashed p-3 space-y-2">
               <Input value={evidenceDesc} onChange={(e) => setEvidenceDesc(e.target.value)} placeholder="Describe the evidence (e.g. 'Photos of completed foundation')" />
-              <div className="flex gap-2">
-                <Button size="sm" disabled={!evidenceDesc} onClick={() => { onAddEvidence(evidenceDesc); setEvidenceDesc(""); }}>Add Evidence</Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  disabled={!evidenceDesc || isSigningEvidence}
+                  onClick={async () => {
+                    setIsSigningEvidence(true);
+                    try {
+                      await onAddEvidence(evidenceDesc);
+                      setEvidenceDesc("");
+                    } finally {
+                      setIsSigningEvidence(false);
+                    }
+                  }}
+                  className="gap-1.5"
+                >
+                  {isSigningEvidence ? <Loader2 className="size-3.5 animate-spin" /> : <Lock className="size-3.5" />}
+                  {isSigningEvidence ? "Signing…" : "Submit & Sign Evidence"}
+                </Button>
                 <Button size="sm" variant="ghost" onClick={onToggleEvidence}>Cancel</Button>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Evidence is hashed and wallet-signed on submit. Once submitted, it cannot be modified.
+              </p>
             </div>
           )}
 

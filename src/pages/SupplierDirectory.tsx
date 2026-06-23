@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { useSeoMeta } from "@unhead/react";
 import {
   BadgeCheck,
   Building2,
+  Check,
   MapPin,
   Search,
   ShieldCheck,
   Users,
+  X,
 } from "lucide-react";
 
 import { useTenderHub } from "@/contexts/TenderHubContext";
@@ -16,25 +17,32 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/useToast";
 import { TENDER_CATEGORIES, ALL_LOCATIONS } from "@/lib/kenyaData";
-import { formatAda, shortAddr } from "@/lib/cardano";
+import { shortAddr } from "@/lib/cardano";
+import type { Registration } from "@/lib/types";
 
 export default function SupplierDirectory() {
-  const { registrations } = useTenderHub();
+  const { registrations, wallet } = useTenderHub();
+  const { toast } = useToast();
+  const session = wallet.session;
+  const myRegistration = session ? registrations.getRegistration(session.address) : undefined;
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
   const [county, setCounty] = useState("All");
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   useSeoMeta({
     title: "Supplier Directory — TenderHub",
     description: "Browse verified suppliers. Filter by industry, county, and verification status.",
   });
 
-  const suppliers = useMemo(() => {
+  const allUsers = useMemo(() => {
     return registrations.registrations.filter((r) => {
-      if (r.role !== "supplier") return false;
+      if (!showAll && r.role !== "supplier") return false;
       if (verifiedOnly && r.kyc.status !== "verified") return false;
       if (category !== "All" && r.industry !== category) return false;
       if (county !== "All" && r.city !== county && r.country !== county) return false;
@@ -44,7 +52,41 @@ export default function SupplierDirectory() {
       }
       return true;
     });
-  }, [registrations.registrations, search, category, county, verifiedOnly]);
+  }, [registrations.registrations, search, category, county, verifiedOnly, showAll]);
+
+  // Verification: any registered user can verify another user's KYC/ISO.
+  // For bootstrapping: if no verified users exist, anyone can verify.
+  // Otherwise, only verified users can verify others.
+  const verifiedUsersExist = registrations.registrations.some((r) => r.kyc.status === "verified");
+  const canVerify = session && myRegistration && (!verifiedUsersExist || myRegistration.kyc.status === "verified");
+
+  const handleVerifyKyc = (reg: Registration) => {
+    registrations.updateRegistration(reg.walletAddress, {
+      kyc: { ...reg.kyc, status: "verified", reviewedAt: Date.now(), reviewerNote: "Verified by peer" },
+    });
+    toast({ title: "KYC verified", description: `${reg.name}'s KYC has been verified.` });
+  };
+
+  const handleRejectKyc = (reg: Registration) => {
+    registrations.updateRegistration(reg.walletAddress, {
+      kyc: { ...reg.kyc, status: "rejected", reviewedAt: Date.now(), reviewerNote: "Rejected by peer" },
+    });
+    toast({ variant: "destructive", title: "KYC rejected", description: `${reg.name}'s KYC has been rejected.` });
+  };
+
+  const handleVerifyIso = (reg: Registration) => {
+    registrations.updateRegistration(reg.walletAddress, {
+      iso: { ...reg.iso, status: "verified", reviewedAt: Date.now(), reviewerNote: "Verified by peer" },
+    });
+    toast({ title: "ISO verified", description: `${reg.name}'s ISO certification has been verified.` });
+  };
+
+  const handleRejectIso = (reg: Registration) => {
+    registrations.updateRegistration(reg.walletAddress, {
+      iso: { ...reg.iso, status: "rejected", reviewedAt: Date.now(), reviewerNote: "Rejected by peer" },
+    });
+    toast({ variant: "destructive", title: "ISO rejected", description: `${reg.name}'s ISO certification has been rejected.` });
+  };
 
   return (
     <Layout>
@@ -53,6 +95,7 @@ export default function SupplierDirectory() {
           <h1 className="text-2xl font-bold tracking-tight">Supplier Directory</h1>
           <p className="mt-1 text-muted-foreground">
             Browse verified suppliers. All profiles are wallet-secured.
+            {canVerify && <span className="text-blue-600"> You can verify other users.</span>}
           </p>
         </div>
 
@@ -63,6 +106,19 @@ export default function SupplierDirectory() {
           <StatBox icon={<BadgeCheck className="size-4 text-blue-600" />} label="ISO Certified" value={registrations.registrations.filter((r) => r.role === "supplier" && r.iso.status === "verified").length} />
           <StatBox icon={<Building2 className="size-4 text-amber-600" />} label="Industries" value={new Set(registrations.registrations.filter((r) => r.role === "supplier").map((r) => r.industry)).size} />
         </div>
+
+        {/* Verification info banner */}
+        {!verifiedUsersExist && registrations.registrations.length > 0 && (
+          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm dark:border-blue-900 dark:bg-blue-950/30">
+            <div className="flex items-start gap-2">
+              <ShieldCheck className="size-4 shrink-0 text-blue-600 mt-0.5" />
+              <div className="text-blue-900 dark:text-blue-200">
+                <p className="font-medium">Bootstrap Verification</p>
+                <p className="mt-1">No verified users exist yet. Any registered user can verify others to bootstrap the platform. Once the first user is verified, only verified users can verify others.</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Search */}
         <div className="mb-4 relative">
@@ -75,6 +131,9 @@ export default function SupplierDirectory() {
           <button onClick={() => setVerifiedOnly(!verifiedOnly)} className={cn("rounded-full px-3 py-1.5 text-sm font-medium transition-colors gap-1.5 flex items-center", verifiedOnly ? "bg-emerald-600 text-white" : "bg-muted text-muted-foreground hover:bg-accent")}>
             <ShieldCheck className="size-3.5" /> KYC Verified Only
           </button>
+          <button onClick={() => setShowAll(!showAll)} className={cn("rounded-full px-3 py-1.5 text-sm font-medium transition-colors", showAll ? "bg-blue-600 text-white" : "bg-muted text-muted-foreground hover:bg-accent")}>
+            Show All Users
+          </button>
           <select className="rounded-full border border-input bg-background px-3 py-1.5 text-sm" value={category} onChange={(e) => setCategory(e.target.value)}>
             <option value="All">All Industries</option>
             {TENDER_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -86,7 +145,7 @@ export default function SupplierDirectory() {
         </div>
 
         {/* Results */}
-        {suppliers.length === 0 ? (
+        {allUsers.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="py-16 text-center">
               <Building2 className="mx-auto size-12 text-muted-foreground/50" />
@@ -100,8 +159,16 @@ export default function SupplierDirectory() {
           </Card>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {suppliers.map((s) => (
-              <SupplierCard key={s.id} supplier={s} />
+            {allUsers.map((s) => (
+              <SupplierCard
+                key={s.id}
+                supplier={s}
+                canVerify={!!canVerify && session?.address !== s.walletAddress}
+                onVerifyKyc={() => handleVerifyKyc(s)}
+                onRejectKyc={() => handleRejectKyc(s)}
+                onVerifyIso={() => handleVerifyIso(s)}
+                onRejectIso={() => handleRejectIso(s)}
+              />
             ))}
           </div>
         )}
@@ -110,7 +177,21 @@ export default function SupplierDirectory() {
   );
 }
 
-function SupplierCard({ supplier }: { supplier: ReturnType<typeof useTenderHub>["registrations"]["registrations"][number] }) {
+function SupplierCard({
+  supplier,
+  canVerify,
+  onVerifyKyc,
+  onRejectKyc,
+  onVerifyIso,
+  onRejectIso,
+}: {
+  supplier: Registration;
+  canVerify: boolean;
+  onVerifyKyc: () => void;
+  onRejectKyc: () => void;
+  onVerifyIso: () => void;
+  onRejectIso: () => void;
+}) {
   return (
     <Card className="h-full transition-all hover:shadow-md hover:border-primary/30">
       <CardContent className="pt-6">
@@ -121,6 +202,7 @@ function SupplierCard({ supplier }: { supplier: ReturnType<typeof useTenderHub>[
           <div className="flex-1 min-w-0">
             <div className="font-semibold truncate">{supplier.name}</div>
             <div className="text-xs text-muted-foreground">{supplier.industry}</div>
+            <Badge variant="secondary" className="text-xs capitalize mt-1">{supplier.role}</Badge>
           </div>
         </div>
 
@@ -138,14 +220,52 @@ function SupplierCard({ supplier }: { supplier: ReturnType<typeof useTenderHub>[
           </div>
         </div>
 
-        {/* Verification badges */}
+        {/* KYC Verification */}
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">KYC:</span>
+              <StatusBadge status={supplier.kyc.status} />
+            </div>
+            {canVerify && supplier.kyc.status === "pending" && (
+              <div className="flex gap-1">
+                <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1" onClick={onVerifyKyc}>
+                  <Check className="size-3" /> Verify
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-destructive" onClick={onRejectKyc}>
+                  <X className="size-3" />
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* ISO Verification */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">ISO:</span>
+              {supplier.iso.status === "verified" ? (
+                <Badge variant="outline" className="text-xs text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-800 gap-1">
+                  <BadgeCheck className="size-3" /> Verified
+                </Badge>
+              ) : (
+                <StatusBadge status={supplier.iso.status} />
+              )}
+            </div>
+            {canVerify && supplier.iso.status === "pending" && (
+              <div className="flex gap-1">
+                <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1" onClick={onVerifyIso}>
+                  <Check className="size-3" /> Verify
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-destructive" onClick={onRejectIso}>
+                  <X className="size-3" />
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Additional badges */}
         <div className="mt-3 flex flex-wrap gap-1.5">
-          <StatusBadge status={supplier.kyc.status} />
-          {supplier.iso.status === "verified" && (
-            <Badge variant="outline" className="text-xs text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-800 gap-1">
-              <BadgeCheck className="size-3" /> ISO
-            </Badge>
-          )}
           {supplier.portfolio.length > 0 && (
             <Badge variant="secondary" className="text-xs">{supplier.portfolio.length} projects</Badge>
           )}

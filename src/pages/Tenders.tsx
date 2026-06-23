@@ -45,7 +45,11 @@ function saveSaved(ids: string[]): void {
 }
 
 export default function Tenders() {
-  const { tenders, contracts, wallet } = useTenderHub();
+  const { tenders, contracts, wallet, registrations } = useTenderHub();
+  const session = wallet.session;
+  const registration = session ? registrations.getRegistration(session.address) : undefined;
+  const isVerified = registration?.kyc.status === "verified";
+  const canPostTender = session && registration?.role === "buyer" && isVerified;
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
   const [county, setCounty] = useState("All");
@@ -105,9 +109,29 @@ export default function Tenders() {
               Browse tenders — secured by Cardano smart contracts.
             </p>
           </div>
-          <Button className="gap-2" asChild>
-            <Link to="/tenders/new"><Plus className="size-4" /> Post a Tender</Link>
-          </Button>
+          {canPostTender ? (
+            <Button className="gap-2" asChild>
+              <Link to="/tenders/new"><Plus className="size-4" /> Post a Tender</Link>
+            </Button>
+          ) : session && registration && !isVerified ? (
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground mb-1">KYC verification required to post</p>
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/suppliers">Get Verified</Link>
+              </Button>
+            </div>
+          ) : session && !registration ? (
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground mb-1">Register to post tenders</p>
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/register">Register</Link>
+              </Button>
+            </div>
+          ) : !session ? (
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground mb-1">Connect wallet to interact</p>
+            </div>
+          ) : null}
         </div>
 
         {/* Stats bar */}
@@ -200,7 +224,9 @@ export default function Tenders() {
               <p className="mt-1 text-muted-foreground max-w-sm mx-auto">
                 {tenders.tenders.length === 0 ? "Be the first to post a tender." : "Try adjusting your filters."}
               </p>
-              <Button className="mt-6 gap-2" asChild><Link to="/tenders/new"><Plus className="size-4" /> Post a Tender</Link></Button>
+              {canPostTender && (
+                <Button className="mt-6 gap-2" asChild><Link to="/tenders/new"><Plus className="size-4" /> Post a Tender</Link></Button>
+              )}
             </CardContent>
           </Card>
         ) : (

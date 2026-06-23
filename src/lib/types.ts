@@ -189,6 +189,14 @@ export interface MilestoneEvidence {
   attachments: { name: string; url?: string }[];
   submittedAt: number;
   submittedBy: string;
+  /** Tamper-proof: SHA-256 hash of the evidence content at submission time. */
+  contentHash?: string;
+  /** Tamper-proof: wallet signature over the content hash, proving the
+   * supplier authored this evidence and it hasn't been altered since. */
+  signature?: string;
+  /** Whether this evidence is locked (tamper-proof). Once `true`, the
+   * evidence cannot be modified. */
+  locked?: boolean;
 }
 
 // ─── Dispute Resolution ────────────────────────────────────────────────
@@ -351,6 +359,29 @@ export interface ContractCancellation {
   supplierKeepPercent?: number;
   /** On-chain cancellation transaction hash. */
   txHash?: string;
+  /**
+   * Bad-faith penalty: if one party rejected a cancellation that was later
+   * determined to be unjustified (the other party's work was legit), the
+   * rejector is penalized. This records the penalty details.
+   */
+  penalty?: ContractCancellationPenalty;
+}
+
+/** Penalty applied when a cancellation rejection was in bad faith. */
+export interface ContractCancellationPenalty {
+  /** Who was penalized. */
+  penalizedParty: "buyer" | "supplier";
+  /** Why they were penalized. */
+  reason: string;
+  /** The penalty percentage of the total contract value deducted from
+   * the penalized party's settlement share. */
+  penaltyPercent: number;
+  /** The ADA amount deducted as penalty. */
+  penaltyAmountAda: number;
+  /** Whether the penalty was applied by an arbitrator or auto-determined. */
+  appliedBy: "arbitrator" | "auto";
+  /** When the penalty was applied. */
+  appliedAt: number;
 }
 
 /** Security configuration for a contract. */

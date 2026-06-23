@@ -33,7 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/useToast";
-import { signMessage } from "@/lib/cardano";
+import { signMessageWithTimeout } from "@/lib/cardano";
 import { formatPublicationType, formatAgpo } from "@/lib/kenyaData";
 import type { Milestone } from "@/lib/types";
 
@@ -74,7 +74,10 @@ export default function TenderDetail() {
   const tenderBids = bids.getBidsForTender(tender.id);
   const isOwner = session?.address === tender.buyerAddress;
   const myBid = session ? tenderBids.find((b) => b.supplierAddress === session.address) : undefined;
-  const canBid = session && !isOwner && !myBid && tender.status === "open" && registrations.getRegistration(session.address)?.role === "supplier";
+  const myRegistration = session ? registrations.getRegistration(session.address) : undefined;
+  const isKycVerified = myRegistration?.kyc.status === "verified";
+  const canBid = session && !isOwner && !myBid && tender.status === "open" && myRegistration?.role === "supplier" && isKycVerified;
+  const canAward = isOwner && isKycVerified;
 
   // Check if a contract already exists
   const existingContract = contracts.getContractByTender(tender.id);
@@ -93,7 +96,7 @@ export default function TenderDetail() {
     try {
       const reg = registrations.getRegistration(session.address);
       const message = `TenderHub Bid:${tender.id}:${session.address}:${price}:${Date.now()}`;
-      await signMessage(session.api, session.address, message);
+      await signMessageWithTimeout(session.api, session.address, message, 30000);
 
       bids.createBid({
         tenderId: tender.id,
@@ -122,7 +125,7 @@ export default function TenderDetail() {
     try {
       // Sign the award
       const message = `TenderHub Award:${tender.id}:${bid.supplierAddress}:${Date.now()}`;
-      await signMessage(session.api, session.address, message);
+      await signMessageWithTimeout(session.api, session.address, message, 30000);
 
       bids.updateBid(bidId, { status: "awarded" });
       tenderBids.filter((b) => b.id !== bidId && b.status !== "withdrawn").forEach((b) => {
@@ -434,6 +437,27 @@ export default function TenderDetail() {
                   <Wallet className="mx-auto size-8 text-muted-foreground/50" />
                   <p className="mt-2 text-sm text-muted-foreground">Connect your wallet and register as a supplier to bid.</p>
                   <Button className="mt-4" asChild><Link to="/register">Register</Link></Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {session && !myRegistration && (
+              <Card className="border-dashed">
+                <CardContent className="pt-6 text-center">
+                  <Shield className="mx-auto size-8 text-muted-foreground/50" />
+                  <p className="mt-2 text-sm text-muted-foreground">You need to register as a supplier to bid on tenders.</p>
+                  <Button className="mt-4" asChild><Link to="/register">Register Now</Link></Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {session && myRegistration && !isKycVerified && !isOwner && !myBid && (
+              <Card className="border-dashed border-amber-300 dark:border-amber-800">
+                <CardContent className="pt-6 text-center">
+                  <Shield className="mx-auto size-8 text-amber-600/50" />
+                  <p className="mt-2 text-sm text-muted-foreground">KYC verification required to bid on tenders.</p>
+                  <p className="text-xs text-muted-foreground mt-1">Your KYC status: <span className="font-medium capitalize">{myRegistration.kyc.status.replace(/_/g, " ")}</span></p>
+                  <Button className="mt-4" variant="outline" asChild><Link to="/suppliers">Get Verified</Link></Button>
                 </CardContent>
               </Card>
             )}

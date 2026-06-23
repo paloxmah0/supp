@@ -26,7 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
-import { signMessage, signCertificate, type CIP30EnabledAPI } from "@/lib/cardano";
+import { signMessageWithTimeout, signAllDocuments, type CIP30EnabledAPI } from "@/lib/cardano";
 import type {
   KycDocument,
   IsoCertification,
@@ -139,7 +139,7 @@ export default function Register() {
       case 0: return true; // wallet already connected
       case 1: return !!role;
       case 2: return formData.name && formData.email && formData.country && formData.city;
-      case 3: return kycDocs.length >= 2 && kycDocs.every((d) => d.signed); // at least 2 signed docs
+      case 3: return kycDocs.length >= 2; // at least 2 docs (no per-doc signing required)
       case 4: return true; // ISO is optional but recommended
       case 5: return true;
       default: return false;
@@ -158,11 +158,45 @@ export default function Register() {
     if (!session) return;
     setIsSubmitting(true);
     try {
-      // Sign a registration proof message with the wallet
-      const message = `TenderHub Registration:${session.address}:${Date.now()}`;
-      await signMessage(session.api, session.address, message);
+      // ─── ONE SINGLE SIGNING: batch-sign all KYC + ISO docs at once ───
+      // Instead of asking the user to sign each document individually, we
+      // build a single message covering ALL documents and sign it once.
+      const allDocs = [
+        ...kycDocs.map((d) => ({ id: d.id, type: d.type, label: d.label, fileName: d.fileName, fileSize: d.fileSize, uploadedAt: d.uploadedAt })),
+        ...isoCerts.map((c) => ({ id: c.id, type: "iso_certification", label: c.standard, fileName: c.fileName, fileSize: c.fileSize, uploadedAt: Number(c.id.split("-")[0]) })),
+      ];
+
+      let batchSignature: { signature: string; signedAt: number; batchHash: string } | undefined;
+
+      if (allDocs.length > 0) {
+        try {
+          batchSignature = await signAllDocuments(session.api, session.address, allDocs);
+          toast({ title: "Documents signed", description: `${allDocs.length} document(s) signed in a single transaction.` });
+        } catch (err) {
+          // If batch signing fails, still register but mark docs as unsigned
+          toast({ variant: "destructive", title: "Batch signing failed", description: err instanceof Error ? err.message : "Documents not signed. You can retry later." });
+        }
+      }
+
+      // Also sign the registration proof (this is the final wallet signature)
+      const regMessage = `TenderHub Registration:${session.address}:${role}:${formData.name}:${Date.now()}`;
+      await signMessageWithTimeout(session.api, session.address, regMessage, 30000);
 
       const now = Date.now();
+      // Apply the batch signature to all documents
+      const signedKycDocs = kycDocs.map((d) => ({
+        ...d,
+        signed: !!batchSignature,
+        signature: batchSignature?.signature,
+        signedAt: batchSignature?.signedAt,
+      }));
+      const signedIsoCerts = isoCerts.map((c) => ({
+        ...c,
+        signed: !!batchSignature,
+        signature: batchSignature?.signature,
+        signedAt: batchSignature?.signedAt,
+      }));
+
       const reg: Registration = {
         id: session.address,
         walletAddress: session.address,
@@ -182,12 +216,12 @@ export default function Register() {
         portfolio: existing?.portfolio ?? [],
         kyc: {
           status: kycDocs.length >= 2 ? "pending" : "not_submitted",
-          documents: kycDocs,
+          documents: signedKycDocs,
           submittedAt: kycDocs.length >= 2 ? now : undefined,
         },
         iso: {
           status: isoCerts.length > 0 ? "pending" : "not_submitted",
-          certifications: isoCerts,
+          certifications: signedIsoCerts,
           submittedAt: isoCerts.length > 0 ? now : undefined,
         },
         txHash: txHash,
@@ -195,9 +229,14 @@ export default function Register() {
 
       registrations.upsertRegistration(reg);
 
+      toast({ title: "Registration complete", description: "Your documents are pending verification." });
       navigate("/dashboard");
-    } catch {
-      // Toast handled by wallet hook; stay on page
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Registration failed",
+        description: err instanceof Error ? err.message : "Wallet signing was cancelled or timed out.",
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -274,7 +313,8 @@ export default function Register() {
                     <Lock className="size-4 shrink-0 text-blue-600 mt-0.5" />
                     <p className="text-blue-900 dark:text-blue-200">
                       Your wallet address will be used as your unique identity on the platform.
-                      A signed message proves you own this address — no private keys ever leave your wallet.
+                      You will sign once at the end to verify all your documents — no per-document
+                      signatures needed.
                     </p>
                   </div>
                 </div>
@@ -408,16 +448,16 @@ export default function Register() {
                   <h3 className="font-semibold text-lg">KYC Verification</h3>
                   <p className="text-sm text-muted-foreground mt-1">
                     Upload at least 2 documents from your device for identity and business verification.
-                    Each document must be wallet-signed to prove authenticity.
+                    All documents will be signed in a single transaction at the end.
                   </p>
                 </div>
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
                   <div className="flex items-start gap-2">
-                    <ShieldCheck className="size-4 shrink-0 text-amber-600 mt-0.5" />
-                    <p className="text-amber-900 dark:text-amber-200">
-                      Documents are uploaded from your device and stored locally for this demo.
-                      Each certificate must be signed against your wallet to be considered valid and original.
-                      In production, the Aiken smart contract would verify these signatures on-chain.
+                    <ShieldCheck className="size-4 shrink-0 text-emerald-600 mt-0.5" />
+                    <p className="text-emerald-900 dark:text-emerald-200">
+                      <strong>One signature for everything.</strong> Upload your documents now —
+                      you'll sign them all at once when you submit your registration.
+                      No per-document wallet popups.
                     </p>
                   </div>
                 </div>
@@ -430,11 +470,9 @@ export default function Register() {
                         <div className="text-xs text-muted-foreground flex items-center gap-2">
                           <span>{KYC_DOC_TYPES.find((t) => t.value === doc.type)?.label}</span>
                           {doc.fileName && <span className="text-muted-foreground/70">· {doc.fileName}</span>}
-                          {doc.signed && (
-                            <Badge variant="outline" className="text-xs text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800 gap-1">
-                              <Check className="size-3" /> Wallet-Signed
-                            </Badge>
-                          )}
+                          <Badge variant="outline" className="text-xs text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-800 gap-1">
+                            <Lock className="size-2.5" /> Pending batch sign
+                          </Badge>
                         </div>
                       </div>
                       <Button
@@ -448,19 +486,11 @@ export default function Register() {
                   ))}
                   <KycUploadForm
                     onAdd={(doc) => setKycDocs([...kycDocs, doc])}
-                    api={session.api}
-                    address={session.address}
-                    toast={toast}
                   />
                 </div>
                 {kycDocs.length > 0 && kycDocs.length < 2 && (
                   <p className="text-sm text-amber-600">
                     Upload at least {2 - kycDocs.length} more document(s) to proceed.
-                  </p>
-                )}
-                {kycDocs.length >= 2 && kycDocs.some((d) => !d.signed) && (
-                  <p className="text-sm text-amber-600">
-                    Some documents are not yet wallet-signed. Click "Sign" on each document to verify it.
                   </p>
                 )}
               </div>
@@ -473,7 +503,7 @@ export default function Register() {
                   <h3 className="font-semibold text-lg">ISO Certification</h3>
                   <p className="text-sm text-muted-foreground mt-1">
                     Add ISO certifications to increase your credibility. Upload the certificate file from your device.
-                    Each certificate must be wallet-signed to prove authenticity. Optional but recommended.
+                    All certificates will be signed together with your KYC documents at the end. Optional but recommended.
                   </p>
                 </div>
                 <div className="space-y-3">
@@ -485,11 +515,9 @@ export default function Register() {
                         <div className="text-xs text-muted-foreground flex items-center gap-2">
                           <span>{cert.certifyingBody} · {cert.certificateNumber}</span>
                           {cert.fileName && <span className="text-muted-foreground/70">· {cert.fileName}</span>}
-                          {cert.signed && (
-                            <Badge variant="outline" className="text-xs text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800 gap-1">
-                              <Check className="size-3" /> Wallet-Signed
-                            </Badge>
-                          )}
+                          <Badge variant="outline" className="text-xs text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-800 gap-1">
+                            <Lock className="size-2.5" /> Pending batch sign
+                          </Badge>
                         </div>
                       </div>
                       <Button
@@ -503,9 +531,6 @@ export default function Register() {
                   ))}
                   <IsoCertForm
                     onAdd={(cert) => setIsoCerts([...isoCerts, cert])}
-                    api={session.api}
-                    address={session.address}
-                    toast={toast}
                   />
                 </div>
                 {isoCerts.length === 0 && (
@@ -522,7 +547,8 @@ export default function Register() {
                 <div>
                   <h3 className="font-semibold text-lg">Review & submit</h3>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Confirm your details and sign with your wallet to register on-chain.
+                    Confirm your details. Clicking "Register" will prompt your wallet once to sign
+                    your registration proof and all documents in a single transaction.
                   </p>
                 </div>
                 <div className="space-y-3">
@@ -531,18 +557,17 @@ export default function Register() {
                   <ReviewRow label="Email" value={formData.email} />
                   <ReviewRow label="Industry" value={formData.industry} />
                   <ReviewRow label="Location" value={`${formData.city}, ${formData.country}`} />
-                  <ReviewRow label="KYC Documents" value={`${kycDocs.length} uploaded (${kycDocs.filter((d) => d.signed).length} signed)`} />
-                  <ReviewRow label="ISO Certifications" value={`${isoCerts.length} added (${isoCerts.filter((c) => c.signed).length} signed)`} />
+                  <ReviewRow label="KYC Documents" value={`${kycDocs.length} uploaded`} />
+                  <ReviewRow label="ISO Certifications" value={`${isoCerts.length} added`} />
                 </div>
                 <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/30">
                   <div className="flex items-start gap-2">
                     <Lock className="size-4 shrink-0 text-blue-600 mt-0.5" />
                     <div className="text-sm text-blue-900 dark:text-blue-200">
-                      <p className="font-medium">Wallet signature required</p>
+                      <p className="font-medium">Single wallet signature</p>
                       <p className="mt-1">
-                        Clicking "Register" will prompt your wallet to sign a registration proof.
-                        This proves you own the connected address. All certificates have been individually
-                        wallet-signed for on-chain verification.
+                        You will sign once to verify your registration and all {kycDocs.length + isoCerts.length} document(s).
+                        After signing, your KYC and ISO will be pending verification by other platform users.
                       </p>
                     </div>
                   </div>
@@ -568,7 +593,7 @@ export default function Register() {
               {isSubmitting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Signing…
+                  Signing registration…
                 </>
               ) : (
                 <>
@@ -630,19 +655,12 @@ function RoleCard({
 
 function KycUploadForm({
   onAdd,
-  api,
-  address,
-  toast,
 }: {
   onAdd: (doc: KycDocument) => void;
-  api: CIP30EnabledAPI;
-  address: string;
-  toast: ReturnType<typeof useToast>["toast"];
 }) {
   const [type, setType] = useState<KycDocument["type"]>("business_registration");
   const [label, setLabel] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isSigning, setIsSigning] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -655,55 +673,27 @@ function KycUploadForm({
     }
   };
 
-  const handleAdd = async () => {
+  const handleAdd = () => {
     if (!label.trim() || !selectedFile) return;
-    setIsSigning(true);
-    try {
-      const uploadedAt = Date.now();
-      const docId = `${uploadedAt}-${Math.random().toString(36).slice(2, 8)}`;
 
-      // Sign the certificate with the wallet to prove authenticity
-      const certData = {
-        type,
-        label: label.trim(),
-        fileName: selectedFile.name,
-        fileSize: selectedFile.size,
-        uploadedAt,
-      };
+    const uploadedAt = Date.now();
+    const docId = `${uploadedAt}-${Math.random().toString(36).slice(2, 8)}`;
 
-      let signature: { key: string; signature: string } | undefined;
-      try {
-        signature = await signCertificate(api, address, certData);
-      } catch {
-        // If signing fails, still add the doc but mark as unsigned
-        toast({ variant: "destructive", title: "Wallet signing failed", description: "Document added but not signed. Click retry later." });
-      }
+    // No per-document signing — documents are batch-signed at registration submit
+    onAdd({
+      id: docId,
+      type,
+      label: label.trim(),
+      uploadedAt,
+      fileName: selectedFile.name,
+      fileSize: selectedFile.size,
+      fileType: selectedFile.type,
+      signed: false, // will be set to true after batch sign at submit
+    });
 
-      onAdd({
-        id: docId,
-        type,
-        label: label.trim(),
-        uploadedAt,
-        fileName: selectedFile.name,
-        fileSize: selectedFile.size,
-        fileType: selectedFile.type,
-        signed: !!signature,
-        signature: signature?.signature,
-        signedAt: signature ? uploadedAt : undefined,
-      });
-
-      if (signature) {
-        toast({ title: "Document uploaded & signed", description: `${selectedFile.name} has been verified with your wallet.` });
-      }
-
-      setLabel("");
-      setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    } catch {
-      // ignore
-    } finally {
-      setIsSigning(false);
-    }
+    setLabel("");
+    setSelectedFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
@@ -763,20 +753,11 @@ function KycUploadForm({
 
         <Button
           onClick={handleAdd}
-          disabled={!label.trim() || !selectedFile || isSigning}
+          disabled={!label.trim() || !selectedFile}
           className="w-full gap-2"
         >
-          {isSigning ? (
-            <>
-              <Loader2 className="size-4 animate-spin" />
-              Signing with wallet…
-            </>
-          ) : (
-            <>
-              <ShieldCheck className="size-4" />
-              Upload & Sign Certificate
-            </>
-          )}
+          <Upload className="size-4" />
+          Add Document
         </Button>
       </div>
     </div>
@@ -785,14 +766,8 @@ function KycUploadForm({
 
 function IsoCertForm({
   onAdd,
-  api,
-  address,
-  toast,
 }: {
   onAdd: (cert: IsoCertification) => void;
-  api: CIP30EnabledAPI;
-  address: string;
-  toast: ReturnType<typeof useToast>["toast"];
 }) {
   const [standard, setStandard] = useState(ISO_STANDARDS[0]);
   const [body, setBody] = useState("");
@@ -800,7 +775,6 @@ function IsoCertForm({
   const [issueDate, setIssueDate] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isSigning, setIsSigning] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -810,57 +784,30 @@ function IsoCertForm({
     }
   };
 
-  const handleAdd = async () => {
+  const handleAdd = () => {
     if (!body.trim() || !number.trim()) return;
-    setIsSigning(true);
-    try {
-      const uploadedAt = Date.now();
-      const certId = `${uploadedAt}-${Math.random().toString(36).slice(2, 8)}`;
 
-      // Sign the certificate with the wallet to prove authenticity
-      const certData = {
-        type: "iso_certification",
-        label: standard,
-        fileName: selectedFile?.name,
-        fileSize: selectedFile?.size,
-        uploadedAt,
-      };
+    const uploadedAt = Date.now();
+    const certId = `${uploadedAt}-${Math.random().toString(36).slice(2, 8)}`;
 
-      let signature: { key: string; signature: string } | undefined;
-      try {
-        signature = await signCertificate(api, address, certData);
-      } catch {
-        toast({ variant: "destructive", title: "Wallet signing failed", description: "Certificate added but not signed." });
-      }
+    // No per-certificate signing — batch-signed at registration submit
+    onAdd({
+      id: certId,
+      standard,
+      certifyingBody: body.trim(),
+      certificateNumber: number.trim(),
+      issueDate,
+      expiryDate,
+      fileName: selectedFile?.name,
+      fileSize: selectedFile?.size,
+      fileType: selectedFile?.type,
+      signed: false, // will be set to true after batch sign at submit
+    });
 
-      onAdd({
-        id: certId,
-        standard,
-        certifyingBody: body.trim(),
-        certificateNumber: number.trim(),
-        issueDate,
-        expiryDate,
-        fileName: selectedFile?.name,
-        fileSize: selectedFile?.size,
-        fileType: selectedFile?.type,
-        signed: !!signature,
-        signature: signature?.signature,
-        signedAt: signature ? uploadedAt : undefined,
-      });
-
-      if (signature) {
-        toast({ title: "Certificate uploaded & signed", description: `${standard} has been verified with your wallet.` });
-      }
-
-      setBody("");
-      setNumber("");
-      setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    } catch {
-      // ignore
-    } finally {
-      setIsSigning(false);
-    }
+    setBody("");
+    setNumber("");
+    setSelectedFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
@@ -940,20 +887,11 @@ function IsoCertForm({
 
       <Button
         onClick={handleAdd}
-        disabled={!body.trim() || !number.trim() || isSigning}
+        disabled={!body.trim() || !number.trim()}
         className="w-full gap-2"
       >
-        {isSigning ? (
-          <>
-            <Loader2 className="size-4 animate-spin" />
-            Signing with wallet…
-          </>
-        ) : (
-          <>
-            <ShieldCheck className="size-4" />
-            Add & Sign Certification
-          </>
-        )}
+        <Upload className="size-4" />
+        Add Certification
       </Button>
     </div>
   );

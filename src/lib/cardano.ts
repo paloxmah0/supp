@@ -297,6 +297,108 @@ export async function signCertificate(
 }
 
 /**
+ * Sign a message with a timeout.  If the wallet doesn't respond within
+ * `timeoutMs` (default 30s), the promise rejects with a clear error.
+ *
+ * This prevents the UI from "hanging" indefinitely when a user doesn't
+ * interact with the wallet popup (or the wallet extension crashes).
+ */
+export async function signMessageWithTimeout(
+  api: CIP30EnabledAPI,
+  address: string,
+  message: string,
+  timeoutMs = 30000,
+): Promise<{ key: string; signature: string }> {
+  return Promise.race([
+    signMessage(api, address, message),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Wallet did not respond within ${timeoutMs / 1000}s. Please try again.`)),
+        timeoutMs,
+      ),
+    ),
+  ]);
+}
+
+/**
+ * Batch-sign multiple documents in a SINGLE wallet prompt.
+ *
+ * Instead of asking the user to sign each document individually (which
+ * causes many wallet popups), this function builds a single message
+ * containing ALL document metadata and signs it once. The resulting
+ * signature covers all documents at once.
+ *
+ * Returns the signature + the hash that was signed, so both can be stored
+ * on each document.
+ */
+export async function signAllDocuments(
+  api: CIP30EnabledAPI,
+  address: string,
+  docs: { id: string; type: string; label: string; fileName?: string; fileSize?: number; uploadedAt: number }[],
+): Promise<{ signature: string; signedAt: number; batchHash: string }> {
+  if (docs.length === 0) {
+    throw new Error("No documents to sign");
+  }
+
+  const signedAt = Date.now();
+  // Build a single deterministic message covering all documents
+  const docSummary = docs
+    .map((d) => `${d.type}:${d.label}:${d.fileName ?? ""}:${d.fileSize ?? 0}:${d.uploadedAt}`)
+    .join("|");
+  const batchHash = await sha256(`TenderHub Batch:${address}:${docs.length}:${docSummary}:${signedAt}`);
+  const message = `TenderHub Batch Signature:${address}:${docs.length}:${batchHash}:${signedAt}`;
+
+  const result = await signMessageWithTimeout(api, address, message, 45000);
+
+  return {
+    signature: result.signature,
+    signedAt,
+    batchHash,
+  };
+}
+
+/**
+ * Compute a SHA-256 hash of a string.  Used for tamper-proof evidence.
+ * Falls back to a simple hash if the SubtleCrypto API is unavailable.
+ */
+export async function sha256(data: string): Promise<string> {
+  try {
+    const encoder = new TextEncoder();
+    const dataBuffer = encoder.encode(data);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", dataBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    // Fallback: simple non-crypto hash (not ideal, but better than nothing)
+    let hash = 0;
+    for (let i = 0; i < data.length; i++) {
+      const char = data.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash |= 0;
+    }
+    return Math.abs(hash).toString(16).padStart(8, "0");
+  }
+}
+
+/**
+ * Sign evidence with the wallet to make it tamper-proof.
+ * Computes a SHA-256 hash of the evidence content, then signs it.
+ * Returns the hash + signature to store on the evidence record.
+ */
+export async function signEvidence(
+  api: CIP30EnabledAPI,
+  address: string,
+  evidence: { description: string; submittedBy: string; attachments: { name: string; url?: string }[] },
+): Promise<{ contentHash: string; signature: string }> {
+  const contentHash = await sha256(
+    `${address}:${evidence.description}:${evidence.submittedBy}:${JSON.stringify(evidence.attachments)}`,
+  );
+  const message = `TenderHub Evidence:${address}:${contentHash}`;
+  const result = await signMessageWithTimeout(api, address, message, 30000);
+  return { contentHash, signature: result.signature };
+}
+
+/**
  * Convert a bech32 address (addr1… / addr_test1…) to the hex-encoded CBOR
  * byte string that CIP-30 `signData()` expects as its first argument.
  *
